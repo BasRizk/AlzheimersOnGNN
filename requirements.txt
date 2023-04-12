@@ -1,0 +1,6 @@
+torch
+nilearn
+einops
+analysis
+torch_geometric
+clinica
