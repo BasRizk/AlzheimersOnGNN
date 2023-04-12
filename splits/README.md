@@ -1,0 +1,1 @@
+These splits are taken from https://github.com/NYUMedML/CNN_design_for_AD/tree/master/datasets/files

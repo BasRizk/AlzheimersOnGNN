@@ -1,5 +1,7 @@
 # AlzheimersOnGNN
 
+Note: All scripts run from the repo root directory
+
 ## Init environment
 ```
 pip install -r requirements.txt
