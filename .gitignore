@@ -1,3 +1,5 @@
+*.tsv
+*.pklz
 data
 tmp
 thirdparty
