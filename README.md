@@ -4,6 +4,7 @@ Note: All scripts run from the repo root directory
 
 ## Init environment
 ```
+conda create -n alz python=3.9
 pip install -r requirements.txt
 ```
 
@@ -17,8 +18,8 @@ conda install -c conda-forge dcm2niix
 Download SPM12:
 ```
 mkdir thirdparty && cd thirdparty
-wget https://www.fil.ion.ucl.ac.uk/spm/download/restricted/eldorado/spm12.zip
-wget https://www.fil.ion.ucl.ac.uk/spm/download/spm12_updates/spm12_updates_r7771.zip
+wget --no-check-certificate https://www.fil.ion.ucl.ac.uk/spm/download/restricted/eldorado/spm12.zip
+wget --no-check-certificate https://www.fil.ion.ucl.ac.uk/spm/download/spm12_updates/spm12_updates_r7771.zip
 unzip spm12.zip
 unzip -o spm12_updates_r7771.zip -d spm12
 ```
