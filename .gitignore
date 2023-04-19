@@ -1,5 +1,7 @@
-*.tsv
+*_participants.tsv
 *.pklz
+*.pth
+imagin/nilearn_cache
 data
 tmp
 thirdparty

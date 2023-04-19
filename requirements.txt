@@ -4,3 +4,5 @@ einops
 analysis
 torch_geometric
 clinica
+tensorboard
+torchvision
