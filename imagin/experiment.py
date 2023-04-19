@@ -180,7 +180,7 @@ def train(argv):
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
                         x, 
-                        windows_size=argv.windows_size,
+                        window_size=argv.window_size,
                         window_stride=argv.window_stride, 
                         num_nodes=dataset.nums_nodes,
                         minibatch_size=argv.minibatch_size,
@@ -244,7 +244,7 @@ def train(argv):
                     all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                         process_input_data(
                             x, 
-                            windows_size=argv.windows_size,
+                            window_size=argv.window_size,
                             window_stride=argv.window_stride, 
                             minibatch_size=argv.minibatch_size,
                             num_nodes=dataset.nums_nodes,
@@ -314,7 +314,7 @@ def train(argv):
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
                         x, 
-                        windows_size=argv.windows_size,
+                        window_size=argv.window_size,
                         window_stride=argv.window_stride, 
                         minibatch_size=argv.minibatch_size,
                         num_nodes=dataset.nums_nodes,
@@ -425,7 +425,7 @@ def test(argv):
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
                         x, 
-                        windows_size=argv.windows_size,
+                        window_size=argv.window_size,
                         window_stride=argv.window_stride, 
                         minibatch_size=argv.minibatch_size,
                         num_nodes=dataset.nums_nodes,
