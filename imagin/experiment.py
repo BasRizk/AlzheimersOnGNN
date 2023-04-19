@@ -4,7 +4,7 @@ import random
 import torch
 import numpy as np
 from model import *
-from dataset import *
+from adni_3d import ADNI
 from tqdm import tqdm
 from einops import repeat
 from torch.utils.tensorboard import SummaryWriter
@@ -48,12 +48,21 @@ def train(argv):
         torch.cuda.manual_seed_all(argv.seed)
     else:
         device = torch.device("cpu")
-
+        
     # define dataset
-    dataset = ADNI(argv.sourcedir, roi=argv.roi, dynamic_length=argv.dynamic_length, k_fold=argv.k_fold, smoothing_fwhm=argv.fwhm)
+    dataset = ADNI(
+        argv.data_dir,
+        argv.splits_dir,
+        # dynamic_length=argv.dynamic_length, 
+        k_fold=argv.k_fold,
+        smoothing_fwhm=argv.fwhm,
+        num_classes=3,
+        depth_of_slice=40,
+        slicing_stride=5
+    )
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=argv.minibatch_size, shuffle=False, num_workers=4, pin_memory=True)
     dataloader_test = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
-
+    breakpoint()
     logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
     # resume checkpoint if file exists
@@ -66,8 +75,9 @@ def train(argv):
             'epoch': 0,
             'model': None,
             'optimizer': None,
-            'scheduler': None}
-
+            'scheduler': None
+        }
+    
     # start experiment
     for k in range(checkpoint['fold'], argv.k_fold):
         # make directories per fold
@@ -75,25 +85,33 @@ def train(argv):
 
         # set dataloader
         dataset.set_fold(k, train=True)
-
+        breakpoint()
         # define model
         model = ModelIMAGIN(
-            input_dims=[dataset.aal_num_nodes, dataset.cc200_num_nodes, dataset.schaefer_num_nodes],
+            input_dims=dataset.nums_nodes,
             hidden_dims=argv.hidden_dims,
             num_classes=2,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
         )
+        breakpoint()
         model.to(device)
         if checkpoint['model'] is not None: model.load_state_dict(checkpoint['model'])
         criterion = torch.nn.CrossEntropyLoss()
 
+        breakpoint()
         # define optimizer and learning rate scheduler
         optimizer = torch.optim.Adam(model.parameters(), lr=argv.lr)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=argv.max_lr, epochs=argv.num_epochs, steps_per_epoch=len(dataloader), pct_start=0.2, div_factor=argv.max_lr/argv.lr, final_div_factor=1000)
+        breakpoint()
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=argv.max_lr, epochs=argv.num_epochs, 
+            steps_per_epoch=len(dataloader),
+            pct_start=0.2, div_factor=argv.max_lr/argv.lr, final_div_factor=1000
+        )
         if checkpoint['optimizer'] is not None: optimizer.load_state_dict(checkpoint['optimizer'])
         if checkpoint['scheduler'] is not None: scheduler.load_state_dict(checkpoint['scheduler'])
 
+        breakpoint()
         # define logging objects
         summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'train'), )
         summary_writer_val = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'val'), )
@@ -113,10 +131,13 @@ def train(argv):
                 # process input data
                 dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size, argv.window_stride, argv.dynamic_length)
                 sampling_endpoints = [p+argv.window_size for p in sampling_points]
-                if i==0: dyn_v = repeat(torch.eye(dataset.num_nodes), 'n1 n2 -> b t n1 n2', t=len(sampling_points), b=argv.minibatch_size)
+                if i==0: dyn_v = repeat(torch.eye(dataset.nums_nodes), 'n1 n2 -> b t n1 n2', t=len(sampling_points), b=argv.minibatch_size)
                 if len(dyn_a) < argv.minibatch_size: dyn_v = dyn_v[:len(dyn_a)]
                 t = x['timeseries'].permute(1,0,2)
                 label = x['label']
+                
+                breakpoint()
+
 
                 logit, loss, attention, latent, reg_ortho = step(
                     model=model,
@@ -243,8 +264,9 @@ def train(argv):
                 # process input data
                 dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size,
                                                                       argv.window_stride)
+                
                 sampling_endpoints = [p + argv.window_size for p in sampling_points]
-                if i == 0: dyn_v = repeat(torch.eye(dataset.num_nodes), 'n1 n2 -> b t n1 n2',
+                if i == 0: dyn_v = repeat(torch.eye(dataset.nums_nodes), 'n1 n2 -> b t n1 n2',
                                           t=len(sampling_points), b=argv.minibatch_size)
                 if not dyn_v.shape[1] == dyn_a.shape[1]: dyn_v = repeat(torch.eye(dataset.num_nodes),
                                                                         'n1 n2 -> b t n1 n2',
@@ -315,7 +337,17 @@ def test(argv):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # define dataset
-    dataset = ADNI(argv.sourcedir, roi=argv.roi, dynamic_length=argv.dynamic_length, k_fold=argv.k_fold, smoothing_fwhm=argv.fwhm)
+    # dataset = ADNI(argv.sourcedir, dynamic_length=argv.dynamic_length, k_fold=argv.k_fold, smoothing_fwhm=argv.fwhm)
+    dataset = ADNI(
+        argv.data_dir,
+        argv.splits_dir,
+        # dynamic_length=argv.dynamic_length, 
+        k_fold=argv.k_fold,
+        smoothing_fwhm=argv.fwhm,
+        num_classes=3,
+        depth_of_slice=40,
+        slicing_stride=5
+    )
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
     logger = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
@@ -323,9 +355,9 @@ def test(argv):
         os.makedirs(os.path.join(argv.targetdir, 'attention', str(k)), exist_ok=True)
 
         model = ModelIMAGIN(
-            input_dims=[dataset.aal_num_nodes, dataset.cc200_num_nodes, dataset.schaefer_num_nodes],
+            input_dims=dataset.num_nodes,
             hidden_dims=argv.hidden_dims,
-            num_classes=2,
+            num_classes=dataset.num_classes,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
         )

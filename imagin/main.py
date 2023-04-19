@@ -1,6 +1,6 @@
 import util
 from experiment import train, test
-from analysis import analyze
+# from analysis import analyze
 
 
 if __name__=='__main__':

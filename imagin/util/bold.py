@@ -19,7 +19,6 @@ def process_dynamic_fc(timeseries, window_size, window_stride, dynamic_length=No
     if sampling_init is None:
         sampling_init = randrange(timeseries.shape[1]-dynamic_length+1)
     sampling_points = list(range(sampling_init, sampling_init+dynamic_length-window_size, window_stride))
-
     dynamic_fc_list = []
     for i in sampling_points:
         fc_list = []
@@ -28,7 +27,10 @@ def process_dynamic_fc(timeseries, window_size, window_stride, dynamic_length=No
             if not self_loop: fc -= torch.eye(fc.shape[0])
             fc_list.append(fc)
         dynamic_fc_list.append(torch.stack(fc_list))
-    return torch.stack(dynamic_fc_list, dim=1), sampling_points
+        
+    dynamic_fc_list = torch.stack(dynamic_fc_list, dim=1)
+    dynamic_fc_list[torch.isnan(dynamic_fc_list)] = 0.0
+    return dynamic_fc_list, sampling_points
 
 
 # corrcoef based on
@@ -40,6 +42,7 @@ def corrcoef(x):
     c = c / (x.size(1) - 1)
     d = torch.diag(c)
     stddev = torch.pow(d, 0.5)
+    # c = c + 1E-10 # Adding tiny amount to avoid nan
     c = c.div(stddev.expand_as(c))
     c = c.div(stddev.expand_as(c).t())
     c = torch.clamp(c, -1.0, 1.0)
