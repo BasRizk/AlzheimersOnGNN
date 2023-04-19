@@ -33,6 +33,54 @@ def step(model, criterion, dyn_v, dyn_a, sampling_endpoints, t, label, reg_lambd
     return logit, loss, attention, latent, reg_ortho
 
 
+def process_input_data(
+        x,
+        window_size=None,
+        window_stride=None, 
+        minibatch_size=None,
+        nums_nodes=None,
+        dynamic_length=None,
+    ):
+    all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t = [], [], [], []
+    for r_i, x_ss in enumerate(x['slices_per_atlas']):
+        dyn_a, sampling_points = util.bold.process_dynamic_fc(
+            x_ss, 
+            window_size,
+            window_stride, 
+            dynamic_length=dynamic_length
+        )
+        
+        sampling_endpoints = [
+            p + window_size for p in sampling_points
+        ]
+        
+        # ARCHIVED OLD LOGIC
+        # TRAINING: if i==0:
+        # VALIDATING: if not dyn_v.shape[1] == dyn_a.shape[1]: 
+        # FINAL VALIDATING/TESTING: BOTH (I think a mistake)
+        
+        dyn_v = repeat(
+            torch.eye(nums_nodes[r_i]),
+            'n1 n2 -> b t n1 n2', 
+            t=len(sampling_points),
+            b=minibatch_size
+        )
+            
+        if len(dyn_a) < minibatch_size:
+            dyn_v = dyn_v[:len(dyn_a)]
+            
+        t = x_ss.permute(1,0,2)
+        
+        all_dyn_a.append(dyn_a)
+        all_sampling_endpoints.append(sampling_endpoints)
+        all_dyn_v.append(dyn_v)
+        all_t.append(t)
+    
+    return all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, x['label']
+
+
+
+
 def train(argv):
     # make directories
     os.makedirs(os.path.join(argv.targetdir, 'model'), exist_ok=True)
@@ -129,23 +177,26 @@ def train(argv):
             reg_ortho_accumulate = 0.0
             for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k} e:{epoch}')):
                 # process input data
-                dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size, argv.window_stride, argv.dynamic_length)
-                sampling_endpoints = [p+argv.window_size for p in sampling_points]
-                if i==0: dyn_v = repeat(torch.eye(dataset.nums_nodes), 'n1 n2 -> b t n1 n2', t=len(sampling_points), b=argv.minibatch_size)
-                if len(dyn_a) < argv.minibatch_size: dyn_v = dyn_v[:len(dyn_a)]
-                t = x['timeseries'].permute(1,0,2)
-                label = x['label']
-                
+                all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
+                    process_input_data(
+                        x, 
+                        windows_size=argv.windows_size,
+                        window_stride=argv.window_stride, 
+                        num_nodes=dataset.nums_nodes,
+                        minibatch_size=argv.minibatch_size,
+                        dynamic_length=argv.dynamic_length,
+                        
+                    )
                 breakpoint()
 
 
                 logit, loss, attention, latent, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=dyn_v,
-                    dyn_a=dyn_a,
-                    sampling_endpoints=sampling_endpoints,
-                    t=t,
+                    dyn_v=all_dyn_v,
+                    dyn_a=all_dyn_a,
+                    sampling_endpoints=all_sampling_endpoints,
+                    t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
@@ -189,26 +240,24 @@ def train(argv):
             for i, x in enumerate(tqdm(dataloader_test, ncols=60, desc=f'k:{k} e:{epoch}')):
                 with torch.no_grad():
                     # process input data
-                    dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size,
-                                                                          argv.window_stride)
-                    sampling_endpoints = [p + argv.window_size for p in sampling_points]
-                    if i == 0: dyn_v = repeat(torch.eye(dataset.num_nodes), 'n1 n2 -> b t n1 n2',
-                                              t=len(sampling_points), b=argv.minibatch_size)
-                    if not dyn_v.shape[1] == dyn_a.shape[1]: dyn_v = repeat(torch.eye(dataset.num_nodes),
-                                                                            'n1 n2 -> b t n1 n2',
-                                                                            t=len(sampling_points),
-                                                                            b=argv.minibatch_size)
-                    if len(dyn_a) < argv.minibatch_size: dyn_v = dyn_v[:len(dyn_a)]
-                    t = x['timeseries'].permute(1, 0, 2)
-                    label = x['label']
+           
+                    all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
+                        process_input_data(
+                            x, 
+                            windows_size=argv.windows_size,
+                            window_stride=argv.window_stride, 
+                            minibatch_size=argv.minibatch_size,
+                            num_nodes=dataset.nums_nodes,
+                            dynamic_length=None
+                        )
 
                     logit, loss, attention, latent, reg_ortho = step(
                         model=model,
                         criterion=criterion,
-                        dyn_v=dyn_v,
-                        dyn_a=dyn_a,
-                        sampling_endpoints=sampling_endpoints,
-                        t=t,
+                        dyn_v=all_dyn_v,
+                        dyn_a=all_dyn_a,
+                        sampling_endpoints=all_sampling_endpoints,
+                        t=all_t,
                         label=label,
                         reg_lambda=argv.reg_lambda,
                         clip_grad=argv.clip_grad,
@@ -261,28 +310,24 @@ def train(argv):
         latent_accumulate = []
         for i, x in enumerate(tqdm(dataloader_test, ncols=60, desc=f'k:{k}')):
             with torch.no_grad():
-                # process input data
-                dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size,
-                                                                      argv.window_stride)
-                
-                sampling_endpoints = [p + argv.window_size for p in sampling_points]
-                if i == 0: dyn_v = repeat(torch.eye(dataset.nums_nodes), 'n1 n2 -> b t n1 n2',
-                                          t=len(sampling_points), b=argv.minibatch_size)
-                if not dyn_v.shape[1] == dyn_a.shape[1]: dyn_v = repeat(torch.eye(dataset.num_nodes),
-                                                                        'n1 n2 -> b t n1 n2',
-                                                                        t=len(sampling_points),
-                                                                        b=argv.minibatch_size)
-                if len(dyn_a) < argv.minibatch_size: dyn_v = dyn_v[:len(dyn_a)]
-                t = x['timeseries'].permute(1, 0, 2)
-                label = x['label']
+                # process input data                
+                all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
+                    process_input_data(
+                        x, 
+                        windows_size=argv.windows_size,
+                        window_stride=argv.window_stride, 
+                        minibatch_size=argv.minibatch_size,
+                        num_nodes=dataset.nums_nodes,
+                        dynamic_length=None
+                    )
 
                 logit, loss, attention, latent, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=dyn_v,
-                    dyn_a=dyn_a,
-                    sampling_endpoints=sampling_endpoints,
-                    t=t,
+                    dyn_v=all_dyn_v,
+                    dyn_a=all_dyn_a,
+                    sampling_endpoints=all_sampling_endpoints,
+                    t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
@@ -377,21 +422,23 @@ def test(argv):
         for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k}')):
             with torch.no_grad():
                 # process input data
-                dyn_a, sampling_points = util.bold.process_dynamic_fc(x['timeseries'], argv.window_size, argv.window_stride)
-                sampling_endpoints = [p+argv.window_size for p in sampling_points]
-                if i==0: dyn_v = repeat(torch.eye(dataset.num_nodes), 'n1 n2 -> b t n1 n2', t=len(sampling_points), b=argv.minibatch_size)
-                if not dyn_v.shape[1]==dyn_a.shape[1]: dyn_v = repeat(torch.eye(dataset.num_nodes), 'n1 n2 -> b t n1 n2', t=len(sampling_points), b=argv.minibatch_size)
-                if len(dyn_a) < argv.minibatch_size: dyn_v = dyn_v[:len(dyn_a)]
-                t = x['timeseries'].permute(1,0,2)
-                label = x['label']
+                all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
+                    process_input_data(
+                        x, 
+                        windows_size=argv.windows_size,
+                        window_stride=argv.window_stride, 
+                        minibatch_size=argv.minibatch_size,
+                        num_nodes=dataset.nums_nodes,
+                        dynamic_length=None,
+                    )
 
                 logit, loss, attention, latent, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=dyn_v,
-                    dyn_a=dyn_a,
-                    sampling_endpoints=sampling_endpoints,
-                    t=t,
+                    dyn_v=all_dyn_v,
+                    dyn_a=all_dyn_a,
+                    sampling_endpoints=all_sampling_endpoints,
+                    t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
