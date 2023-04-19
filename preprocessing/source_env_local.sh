@@ -22,13 +22,13 @@
 # source ${FSLDIR}/etc/fslconf/fsl.sh
 
 # Matlab
-export MATLAB_HOME="spack/apps/matlab/2022a/bin/matlab"
+export MATLAB_HOME="/usr/local/MATLAB/R2023a"
 export PATH=${MATLAB_HOME}:${PATH}
 export MATLABCMD=${MATLAB_HOME}/matlab
 
 # SPM
-export SPM_HOME=/project/ajitesh_1045/thirdparty/spm12
-export MATLABPATH=$SPM_HOME:$MATLABPATH
+export SPM_HOME=$PWD/thirdparty/spm12
+export MATLABPATH=$SPM_HOME
 
 # Only with windows
 # export PATH="thirdparty\dcm2niix_win:$PATH"

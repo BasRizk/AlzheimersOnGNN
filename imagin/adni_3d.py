@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from random import shuffle
 import random
-from augmentations import *
+# from augmentations import *
 import traceback
 from tqdm import tqdm
 from torch import float32, save, load
@@ -243,23 +243,23 @@ class ADNI(Dataset):
 
 
 
-    def centerCrop(self, img, length, width, height):
-        assert img.shape[1] >= length
-        assert img.shape[2] >= width
-        assert img.shape[3] >= height
+    # def centerCrop(self, img, length, width, height):
+    #     assert img.shape[1] >= length
+    #     assert img.shape[2] >= width
+    #     assert img.shape[3] >= height
 
-        x = img.shape[1]//2 - length//2
-        y = img.shape[2]//2 - width//2
-        z = img.shape[3]//2 - height//2
-        img = img[:,x:x+length, y:y+width, z:z+height]
-        return img
+    #     x = img.shape[1]//2 - length//2
+    #     y = img.shape[2]//2 - width//2
+    #     z = img.shape[3]//2 - height//2
+    #     img = img[:,x:x+length, y:y+width, z:z+height]
+    #     return img
 
-    def randomCrop(self, img, length, width, height):
-        assert img.shape[1] >= length
-        assert img.shape[2] >= width
-        assert img.shape[3] >= height
-        x = random.randint(0, img.shape[1] - length)
-        y = random.randint(0, img.shape[2] - width)
-        z = random.randint(0, img.shape[3] - height )
-        img = img[:,x:x+length, y:y+width, z:z+height]
-        return img
+    # def randomCrop(self, img, length, width, height):
+    #     assert img.shape[1] >= length
+    #     assert img.shape[2] >= width
+    #     assert img.shape[3] >= height
+    #     x = random.randint(0, img.shape[1] - length)
+    #     y = random.randint(0, img.shape[2] - width)
+    #     z = random.randint(0, img.shape[3] - height )
+    #     img = img[:,x:x+length, y:y+width, z:z+height]
+    #     return img
