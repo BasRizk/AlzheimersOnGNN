@@ -236,9 +236,10 @@ class ADNI(Dataset):
         for ss in map(preprocess_slice, slices):
             for r_i, s in enumerate(ss):
                 data[r_i].append(s)
+        breakpoint()
         for r_i in range(len(self.roi_maskers)):
             data[r_i] = torch.tensor(data[r_i], dtype=float32)
-            
+        breakpoint()
         return data
 
 
