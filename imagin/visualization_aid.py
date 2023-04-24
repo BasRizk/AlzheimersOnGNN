@@ -42,6 +42,7 @@ def plot_cube(cube, angle=320, img_dim=50):
     x, y, z = expand_coordinates(np.indices(np.array(filled.shape) + 1))
 
     fig = plt.figure(figsize=(30/2.54, 30/2.54))
+    
     ax = fig.gca(projection='3d')
     ax.view_init(30, angle)
     ax.set_xlim(right=img_dim*2)

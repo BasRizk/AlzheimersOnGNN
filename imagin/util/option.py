@@ -6,6 +6,8 @@ import argparse
 def parse():
     parser = argparse.ArgumentParser(description='SPATIO-TEMPORAL-ATTENTION-GRAPH-ISOMORPHISM-NETWORK')
 
+    parser.add_argument('--clean_cache', action='store_true') # TODO EMPLOY IT
+
     parser.add_argument('--num_classes', type=int, default=3)
     parser.add_argument('--depth_of_slice', type=int, default=40)
     parser.add_argument('--slicing_stride', type=int, default=5)
@@ -21,7 +23,16 @@ def parse():
     parser.add_argument('-k', '--k_fold', type=int, default=2) #5
     parser.add_argument('-b', '--minibatch_size', type=int, default=2) #3
 
-    parser.add_argument('-ds', '--data_dir', type=str, default='../data')
+    data_path = atlas_path = '../data'
+    data_type = 't1_volume'
+    data_path = '/project/ajiteshs_1045/alzheimers/temp_t1linear_brains/'
+    data_type = 't1_linear'
+    parser.add_argument(
+        '--data_type', type=str, default=data_type,
+        help='whether the data are processed using t1_linear or t1_volume pipeline'
+    )
+    parser.add_argument('-ds', '--data_dir', type=str, default=data_path)
+    parser.add_argument('-ad', '--atlas_dir', type=str, default=atlas_path)
     parser.add_argument('-sd', '--splits_dir', type=str, default='../splits')
     parser.add_argument('-dt', '--targetdir', type=str, default='./result')
     

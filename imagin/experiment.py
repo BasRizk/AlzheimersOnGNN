@@ -143,6 +143,8 @@ def train(argv):
     # define dataset
     dataset = ADNI(
         argv.data_dir,
+        argv.data_type,
+        argv.atlas_dir,
         argv.splits_dir,
         # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,
@@ -448,9 +450,10 @@ def test(argv):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # define dataset
-    # dataset = ADNI(argv.sourcedir, dynamic_length=argv.dynamic_length, k_fold=argv.k_fold, smoothing_fwhm=argv.fwhm)
     dataset: ADNI = ADNI(
         argv.data_dir,
+        argv.data_type,
+        argv.atlas_dir,
         argv.splits_dir,
         # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,

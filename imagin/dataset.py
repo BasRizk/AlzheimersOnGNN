@@ -25,6 +25,8 @@ class ADNI(Dataset):
 
     def __init__(self, 
         data_dir='../data', 
+        data_type='t1_linear',
+        atlas_dir='../data',
         splits_dir= '../splits',
         mode='Train',
         num_classes=3,
@@ -35,6 +37,15 @@ class ADNI(Dataset):
         device=None,
         parallize_brains=True
     ):
+        if data_type == "t1_volume":
+            self.suffix = 't1/spm/segmentation/normalized_space'
+            self.seg_substring = 'Space_T1w'
+        elif data_type == 't1_linear':
+            self.suffix = 't1_linear'
+            self.seg_substring = 'Sym_res-1x1x1_T1w.nii'
+        else:
+            raise Exception(f'Data type {data_type} is not supported')
+
         self.parallized_brains = parallize_brains
         self.n_processes = os.cpu_count() - 2
         print(f'ADNI Dataset Processing using {self.n_processes} processes')
@@ -74,13 +85,13 @@ class ADNI(Dataset):
         #     self.subject_tsv = subject_tsv.iloc[np.random.permutation(int(len(subject_tsv)))]
         # self.subject_id = np.unique(subject_tsv.participant_id.values)
         # self.index_dic = dict(zip(self.subject_id,range(len(self.subject_id))))
-        self.dir_to_scans = os.path.join(data_dir, 'SUBSET_OF_DATA_PROCESSED/subjects/')
+        self.dir_to_scans = os.path.join(data_dir, 'processed', 'subjects')
         self.mode = mode
         # self.age_range = list(np.arange(0.0,120.0,0.5))
         self.slicing_stride = slicing_stride
         self.depth_of_slice = depth_of_slice
         self.experiment_name = f'prepared_adni_{self.mode}_{self.num_classes}classes_{self.depth_of_slice}ds'
-        self.load_atlases(data_dir)
+        self.load_atlases(atlas_dir)
 
         if os.path.isfile(os.path.join(data_dir, f'{self.experiment_name}.pth')):
             self.slices_stack_dict = load(os.path.join(data_dir, f'{self.experiment_name}.pth'))
@@ -150,18 +161,18 @@ class ADNI(Dataset):
                 for idx in test_idx
             ]
 
-    def load_atlases(self, data_dir):
+    def load_atlases(self, atlas_dir):
         # if roi=='schaefer':
         self.atlases_names = ['aal', 'cc200', 'schaefer']
         self.roi_maskers: NiftiLabelsMasker = []
         atlases = [
-            fetch_atlas_aal(data_dir=os.path.join(data_dir, 'roi')),
+            fetch_atlas_aal(data_dir=os.path.join(atlas_dir, 'roi')),
             # Commented out as orginally  meant for ADHD
             {
-                "maps": os.path.join(data_dir, 'roi', 'cc200', 'cc200_roi_atlas.nii.gz'),
+                "maps": os.path.join(atlas_dir, 'roi', 'cc200', 'cc200_roi_atlas.nii.gz'),
                 "labels": 200
             },
-            fetch_atlas_schaefer_2018(data_dir=os.path.join(data_dir, 'roi')),
+            fetch_atlas_schaefer_2018(data_dir=os.path.join(atlas_dir, 'roi')),
         ]
         for atlas in atlases:
             # TODO Add other sides/rotations
@@ -209,18 +220,20 @@ class ADNI(Dataset):
     def get_prepared_sample(self, participant_id, session_id):
         sample_id = f"{participant_id}_{session_id}"
         try:
+
             path = os.path.join(self.dir_to_scans,participant_id,
-                    session_id,'t1/spm/segmentation/normalized_space')
+                    session_id, self.suffix)
             all_segs = list(os.listdir(path))
             img_filename = [
                 seg_name for seg_name in all_segs 
-                if 'Space_T1w' in seg_name
+                if self.seg_substring in seg_name
             ]
             assert len(img_filename) == 1
             img_filename = img_filename[0]
             slices = self.prepare_brain(
                 load_img(os.path.join(path, img_filename))
             )
+            # breakpoint()
             
 
             # mmse = self.subject_tsv.iloc[idx].mmse

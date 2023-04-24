@@ -6,3 +6,4 @@ torch_geometric
 clinica
 tensorboard
 torchvision
+matplotlib==3.3.1
