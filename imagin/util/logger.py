@@ -34,7 +34,6 @@ class LoggerIMAGIN(object):
             else:
                 self.samples[k] = self._initialize_metric_dict()
 
-
     def add(self, k=None, **kwargs):
         if self.k_fold is None:
             for sample, value in kwargs.items():
@@ -74,16 +73,55 @@ class LoggerIMAGIN(object):
         if not self.k_fold is None and k is None:
             if option=='mean': aggregate = np.mean
             elif option=='std': aggregate = np.std
-            else: raise
-            accuracy = aggregate([metrics.accuracy_score(samples['true'][k], samples['pred'][k]) for k in range(self.k_fold)])
-            precision = aggregate([metrics.precision_score(samples['true'][k], samples['pred'][k], average='binary' if self.num_classes==2 else 'micro') for k in range(self.k_fold)])
-            recall = aggregate([metrics.recall_score(samples['true'][k], samples['pred'][k], average='binary' if self.num_classes==2 else 'micro') for k in range(self.k_fold)])
-            roc_auc = aggregate([metrics.roc_auc_score(samples['true'][k], samples['prob'][k][:,1]) for k in range(self.k_fold)]) if self.num_classes==2 else np.mean([metrics.roc_auc_score(samples['true'][k], samples['prob'][k], average='macro', multi_class='ovr') for k in range(self.k_fold)])
+            else: raise 
+            accuracy = aggregate([
+                metrics.accuracy_score(samples['true'][k], samples['pred'][k])
+                for k in range(self.k_fold)
+            ])
+            precision = aggregate([
+                metrics.precision_score(
+                    samples['true'][k], samples['pred'][k],
+                    average='binary' if self.num_classes==2 else 'micro'
+                )
+                for k in range(self.k_fold)
+            ])
+            recall = aggregate([
+                metrics.recall_score(
+                    samples['true'][k], samples['pred'][k],
+                    average='binary' if self.num_classes==2 else 'micro'
+                )
+                for k in range(self.k_fold)
+            ])
+            if self.num_classes==2:
+                roc_auc = aggregate([
+                    metrics.roc_auc_score(samples['true'][k], samples['prob'][k][:,1]) 
+                    for k in range(self.k_fold)])
+            else:
+                roc_auc = np.mean([
+                    metrics.roc_auc_score(
+                        samples['true'][k], samples['prob'][k], 
+                        average='macro', multi_class='ovr'
+                    ) 
+                    for k in range(self.k_fold)
+                ])
         else:
             accuracy = metrics.accuracy_score(samples['true'], samples['pred'])
-            precision = metrics.precision_score(samples['true'], samples['pred'], average='binary' if self.num_classes==2 else 'micro')
-            recall = metrics.recall_score(samples['true'], samples['pred'], average='binary' if self.num_classes==2 else 'micro')
-            roc_auc = metrics.roc_auc_score(samples['true'], samples['prob'][:,1]) if self.num_classes==2 else metrics.roc_auc_score(samples['true'], samples['prob'], average='macro', multi_class='ovr')
+            precision = metrics.precision_score(
+                samples['true'], samples['pred'], 
+                average='binary' if self.num_classes==2 else 'micro'
+            )
+            recall = metrics.recall_score(
+                samples['true'], samples['pred'], 
+                average='binary' if self.num_classes==2 else 'micro'
+            )
+
+            if self.num_classes==2:
+                roc_auc = metrics.roc_auc_score(samples['true'], samples['prob'][:,1]) 
+            else:
+                roc_auc = metrics.roc_auc_score(
+                    samples['true'], samples['prob'], average='macro',
+                    multi_class='ovr'
+                )
 
         if initialize:
             self.initialize(k)

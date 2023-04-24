@@ -1,89 +1,312 @@
-import os
+import os, torch
+import numpy as np
+from PIL import ImageFile
+import random 
 import numpy as np
 import pandas as pd
+from random import shuffle
+import random
+# from augmentations import *
+import traceback
 from tqdm import tqdm
-from random import shuffle, randrange
-from torch import tensor, float32, save, load
+from torch import float32, save, load
 from torch.utils.data import Dataset
+from nibabel import Nifti1Image
 from nilearn.image import load_img, smooth_img, clean_img
 from nilearn.maskers import NiftiLabelsMasker
 from nilearn.datasets import fetch_atlas_schaefer_2018, fetch_atlas_aal, fetch_atlas_destrieux_2009, fetch_atlas_harvard_oxford
 from sklearn.model_selection import StratifiedKFold
+from multiprocessing.pool import ThreadPool
 
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class ADNI(Dataset):
-    def __init__(self, sourcedir, roi, dynamic_length=None, k_fold=None, target_feature='Autism', smoothing_fwhm=None):
-        super().__init__()
-        self.filename = 'adni'
-        self.filename += f'_roi-{roi}'
-        if smoothing_fwhm is not None: self.filename += f'_fwhm-{smoothing_fwhm}'
 
-        if roi=='schaefer':
-            self.roi = fetch_atlas_schaefer_2018(data_dir=os.path.join(sourcedir, 'roi'))
-            atlas_img = load_img(self.roi['maps'])
-        elif roi=='aal':
-            self.roi = fetch_atlas_aal(data_dir=os.path.join(sourcedir, 'roi'))
-            atlas_img = load_img(self.roi['maps'])
-        elif roi=='cc200':
-            atlas_img = load_img(os.path.join(sourcedir, 'roi', 'cc200', 'cc200_roi_atlas.nii.gz'))
-
-        self.sourcedir = sourcedir
-        self.dynamic_length = dynamic_length
-
-        if os.path.isfile(os.path.join(sourcedir, f'{self.filename}.pth')):
-            self.timeseries_dict = load(os.path.join(sourcedir, f'{self.filename}.pth'))
+    def __init__(self, 
+        data_dir='../data', 
+        splits_dir= '../splits',
+        mode='Train',
+        num_classes=3,
+        depth_of_slice=40,
+        k_fold=None,
+    #  smoothing_fwhm=None,
+        slicing_stride=5,
+        device=None,
+        parallize_brains=True
+    ):
+        self.parallized_brains = parallize_brains
+        self.n_processes = os.cpu_count() - 2
+        print(f'ADNI Dataset Processing using {self.n_processes} processes')
+        if self.parallized_brains:
+            print('..Parellizing over brains processing')
         else:
-            roi_masker = NiftiLabelsMasker(atlas_img, standardize=True)
-            self.timeseries_dict = {}
-            img_list = [f for f in os.listdir(os.path.join(sourcedir, 'img', 'REST')) if f.endswith('nii.gz')]
-            img_list.sort()
-            for img in tqdm(img_list, ncols=60):
-                id = img.split('.')[0]
-                timeseries = roi_masker.fit_transform(load_img(os.path.join(sourcedir, 'img', 'REST', img)))
-                # if not len(timeseries) == 1200: continue
-                self.timeseries_dict[id] = timeseries
-            save(self.timeseries_dict, os.path.join(sourcedir, f'{self.filename}.pth'))
+            print('..Parallizing over slices processing')
+        self.threading_pool = ThreadPool(self.n_processes)
+        
+        self.device = device
 
-        self.num_timepoints, self.num_nodes = list(self.timeseries_dict.values())[0].shape
-        self.full_subject_list = list(self.timeseries_dict.keys())
+        self.num_classes = num_classes
+        if self.num_classes == 3:
+            LABEL_MAPPING = ["CN", "MCI", "AD"]
+        elif self.num_classes == 2:
+            LABEL_MAPPING = ["CN", "AD"]
+        self.LABEL_MAPPING = LABEL_MAPPING     
+    
+        subject_tsv = pd.io.parsers.read_csv(
+            os.path.join(splits_dir, mode + '_diagnosis_ADNI.tsv'),
+            sep='\t'
+        )
+
+        # Clean sessions without labels
+        indices_not_missing = []
+        for i in range(len(subject_tsv)):
+            if mode == 'Train':
+                if (subject_tsv.iloc[i].diagnosis in LABEL_MAPPING):
+                    indices_not_missing.append(i)
+            else:
+                if (subject_tsv.iloc[i].diagnosis in LABEL_MAPPING):
+                    indices_not_missing.append(i)
+
+        self.subject_tsv = subject_tsv.iloc[indices_not_missing]
+        
+        # if mode == 'Train':
+        #     self.subject_tsv = subject_tsv.iloc[np.random.permutation(int(len(subject_tsv)))]
+        # self.subject_id = np.unique(subject_tsv.participant_id.values)
+        # self.index_dic = dict(zip(self.subject_id,range(len(self.subject_id))))
+        self.dir_to_scans = os.path.join(data_dir, 'SUBSET_OF_DATA_PROCESSED/subjects/')
+        self.mode = mode
+        # self.age_range = list(np.arange(0.0,120.0,0.5))
+        self.slicing_stride = slicing_stride
+        self.depth_of_slice = depth_of_slice
+        self.experiment_name = f'prepared_adni_{self.mode}_{self.num_classes}classes_{self.depth_of_slice}ds'
+        self.load_atlases(data_dir)
+
+        if os.path.isfile(os.path.join(data_dir, f'{self.experiment_name}.pth')):
+            self.slices_stack_dict = load(os.path.join(data_dir, f'{self.experiment_name}.pth'))
+            print('Loading Saved slices..')
+
+        else:
+            print('Preparing data and generating slices..')
+            self.slices_stack_dict = {}
+            def get_slices(item):
+                idx, row = item
+                participant_id = row['participant_id']
+                session_id = row['session_id']   
+                slices = self.get_prepared_sample(participant_id, session_id)
+                return idx, slices
+
+            if self.parallized_brains:
+                for idx, slices in tqdm(
+                    self.threading_pool.imap_unordered(
+                        get_slices,
+                        subject_tsv.iterrows(),
+                        chunksize=self.n_processes
+                    ),
+                    ncols=60, total=subject_tsv.shape[0]
+                ):
+                    self.slices_stack_dict[idx] = slices
+
+            else:
+                for idx, row in tqdm(subject_tsv.iterrows(), ncols=60, total=subject_tsv.shape[0]): 
+                    _, self.slices_stack_dict[idx] = get_slices((idx, row))
+
+            save(self.slices_stack_dict, os.path.join(data_dir, f'{self.experiment_name}.pth'))
+            
+        _somekey = list(self.slices_stack_dict.keys())[0]
+        self.nums_nodes = []
+        for i in range(len(self.roi_maskers)):
+            self.nums_nodes.append(self.slices_stack_dict[_somekey][i].shape[1])
+        
+        self.full_sample_id_list = list(self.slices_stack_dict.keys())
+
+        self.k_fold = k_fold
         if k_fold is None:
-            self.subject_list = self.full_subject_list
-        else:
-            self.k_fold = StratifiedKFold(k_fold, shuffle=True, random_state=0) if k_fold is not None else None
+            self.sample_id_list = self.full_sample_id_list
+        if k_fold is not None:
+            self.k_fold = StratifiedKFold(k_fold, shuffle=True, random_state=0)
             self.k = None
-
-        behavioral_df = pd.read_csv(os.path.join(sourcedir, 'behavioral', 'adni.csv')).set_index('Subject')[target_feature]
-        self.num_classes = len(behavioral_df.unique())
-        self.behavioral_dict = behavioral_df.to_dict()
-        self.full_label_list = [self.behavioral_dict[int(subject)] for subject in self.full_subject_list]
-
-
-    def __len__(self):
-        return len(self.subject_list) if self.k is not None else len(self.full_subject_list)
-
-
+        
+        self.threading_pool.close()
+        # self.num_classes = len(behavioral_df.unique())
+        
     def set_fold(self, fold, train=True):
         assert self.k_fold is not None
         self.k = fold
-        train_idx, test_idx = list(self.k_fold.split(self.full_subject_list, self.full_label_list))[fold]
-        if train: shuffle(train_idx)
-        self.subject_list = [self.full_subject_list[idx] for idx in train_idx] if train else [self.full_subject_list[idx] for idx in test_idx]
+        
+        labels = self.subject_tsv.iloc[self.full_sample_id_list]['diagnosis'].to_list()
+        train_idx, test_idx = list(
+            self.k_fold.split(self.full_sample_id_list, labels)
+        )[fold]
+        if train:
+            shuffle(train_idx)
+            self.sample_id_list = [
+                self.full_sample_id_list[idx]
+                for idx in train_idx
+            ]
+        else:
+            self.sample_id_list = [
+                self.full_sample_id_list[idx]
+                for idx in test_idx
+            ]
 
+    def load_atlases(self, data_dir):
+        # if roi=='schaefer':
+        self.atlases_names = ['aal', 'cc200', 'schaefer']
+        self.roi_maskers: NiftiLabelsMasker = []
+        atlases = [
+            fetch_atlas_aal(data_dir=os.path.join(data_dir, 'roi')),
+            # Commented out as orginally  meant for ADHD
+            {
+                "maps": os.path.join(data_dir, 'roi', 'cc200', 'cc200_roi_atlas.nii.gz'),
+                "labels": 200
+            },
+            fetch_atlas_schaefer_2018(data_dir=os.path.join(data_dir, 'roi')),
+        ]
+        for atlas in atlases:
+            # TODO Add other sides/rotations
+            atlas_img = load_img(atlas['maps'])
+            # Note Standarize to false as already applied.. if applied again will lead to zeros
+            atlas_labels = atlas.get('labels')
+            self.roi_maskers.append(
+                NiftiLabelsMasker(
+                    atlas_img, labels=atlas_labels, standardize=False,
+                    # memory="nilearn_cache",
+                    # verbose=5,
+                    resampling_target="labels"
+                )
+            )        
+            self.roi_maskers[-1].fit()
+    
+    def __len__(self):
+        return len(self.sample_id_list)
 
     def __getitem__(self, idx):
-        subject = self.subject_list[idx]
-        timeseries = self.timeseries_dict[subject]
-        if not self.dynamic_length is None:
-            sampling_init = randrange(len(timeseries) - self.dynamic_length)
-            timeseries = timeseries[sampling_init:sampling_init+self.dynamic_length]
-        label = self.behavioral_dict[int(subject)]
-
-        if label == 0:
-            label = tensor(0)
-        elif label == 1:
-            label = tensor(1)
+        sample_id = self.sample_id_list[idx]
+        if self.subject_tsv.iloc[sample_id].diagnosis == 'CN':
+            label = 0
+        elif self.subject_tsv.iloc[sample_id].diagnosis == 'MCI':
+            label = 1
+        elif self.subject_tsv.iloc[sample_id].diagnosis == 'AD':
+            if self.LABEL_MAPPING == ["CN", "AD"]:
+                label = 1
+            else:
+                label = 2
         else:
-            raise
+            print('WRONG LABEL VALUE!!!')
+            label = -100
+        
+        slices = self.slices_stack_dict[idx]
+        
+        return {
+            "id": sample_id,
+            "slices_per_atlas": [s.to(self.device) for s in slices],
+            "label": torch.tensor(label).to(self.device)
+        }
+        # return image.astype(np.float32),label,idx_out,mmse,cdr_sub,age, os.path.join(path,seg_name)
 
-        return {'id': subject, 'timeseries': tensor(timeseries, dtype=float32), 'label': label}
 
+    def get_prepared_sample(self, participant_id, session_id):
+        sample_id = f"{participant_id}_{session_id}"
+        try:
+            path = os.path.join(self.dir_to_scans,participant_id,
+                    session_id,'t1/spm/segmentation/normalized_space')
+            all_segs = list(os.listdir(path))
+            img_filename = [
+                seg_name for seg_name in all_segs 
+                if 'Space_T1w' in seg_name
+            ]
+            assert len(img_filename) == 1
+            img_filename = img_filename[0]
+            slices = self.prepare_brain(
+                load_img(os.path.join(path, img_filename))
+            )
+            
+
+            # mmse = self.subject_tsv.iloc[idx].mmse
+            # cdr_sub = 0#self.subject_tsv.iloc[idx].cdr #cdr_sb #cdr#
+            # age = list(np.arange(0.0,120.0,0.5)).index(self.subject_tsv.iloc[idx].age_rounded) #list(np.arange(0.0,25.0)).index(self.subject_tsv.iloc[idx].education_level)#
+            # idx_out = self.index_dic[self.subject_tsv.iloc[idx].participant_id]
+
+        except Exception as e:
+            print(f"Failed to load #{sample_id}: {path}")
+            print(f"Errors encountered: {e}")
+            print(traceback.format_exc())
+            return None
+
+        return slices
+
+    def prepare_brain(self, img_nib):
+        def preprocess_slice(img_slice):
+            img_nib_slice = Nifti1Image(img_slice.squeeze(), affine=img_nib.affine)
+            img_slice_trans = []
+            for masker in self.roi_maskers:
+                img_slice_trans.append(masker.transform(img_nib_slice).squeeze())
+            return img_slice_trans
+            
+        # Dropping one 2d slice to have equal 3D slices later
+        img = img_nib.get_data()
+        # img = img[:,:,:-1] 
+        img[np.isnan(img)] = 0.0
+        img = (img - img.min())/(img.max() - img.min() + 1e-6)
+        # img = np.expand_dims(img, axis=0)
+        # if self.mode == 'Train':
+        #     img = self.augment_image(img)
+        # if self.mode == 'Train':
+        #     img = self.randomCrop(img,96,96,96)
+        # else:
+        #     img = self.centerCrop(img,96,96,96)
+            
+        # breakpoint()
+        # slices = np.array_split(img, self.num_slices, axis=-1) 
+
+        slices = np.lib.stride_tricks.sliding_window_view(
+            img, 
+            window_shape=(*img.shape[:-1], self.depth_of_slice), 
+            axis=(0,1,2)
+        ).squeeze()
+
+
+        slices = slices[::self.slicing_stride, :, :, :]
+        
+        data = [[] for _ in self.roi_maskers]
+
+        if self.parallized_brains:
+            mapping_func = map
+        else:
+            mapping_func = lambda func, itr: self.threading_pool.map(
+                func, itr, chunksize=self.n_processes
+            )
+        for ss in mapping_func(preprocess_slice, slices):
+            for r_i, s in enumerate(ss):
+                data[r_i].append(s)
+        
+        for r_i in range(len(self.roi_maskers)):
+            data[r_i] = torch.tensor(
+                np.array(data[r_i]), 
+                dtype=float32
+            ).to_dense()
+        return data
+
+
+
+    # def centerCrop(self, img, length, width, height):
+    #     assert img.shape[1] >= length
+    #     assert img.shape[2] >= width
+    #     assert img.shape[3] >= height
+
+    #     x = img.shape[1]//2 - length//2
+    #     y = img.shape[2]//2 - width//2
+    #     z = img.shape[3]//2 - height//2
+    #     img = img[:,x:x+length, y:y+width, z:z+height]
+    #     return img
+
+    # def randomCrop(self, img, length, width, height):
+    #     assert img.shape[1] >= length
+    #     assert img.shape[2] >= width
+    #     assert img.shape[3] >= height
+    #     x = random.randint(0, img.shape[1] - length)
+    #     y = random.randint(0, img.shape[2] - width)
+    #     z = random.randint(0, img.shape[3] - height )
+    #     img = img[:,x:x+length, y:y+width, z:z+height]
+    #     return img

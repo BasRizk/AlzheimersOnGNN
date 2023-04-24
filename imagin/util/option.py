@@ -5,10 +5,21 @@ import argparse
 
 def parse():
     parser = argparse.ArgumentParser(description='SPATIO-TEMPORAL-ATTENTION-GRAPH-ISOMORPHISM-NETWORK')
+
+    parser.add_argument('--num_classes', type=int, default=3)
+    parser.add_argument('--depth_of_slice', type=int, default=40)
+    parser.add_argument('--slicing_stride', type=int, default=5)
+    parser.add_argument(
+        '--parallize_brains', action='store_true', default=False,
+        help="parallize per brains processing instead of"
+         "parallizing threads over slices processing"
+         " (set to true when working with real dataset)"
+    )
+
     parser.add_argument('-s', '--seed', type=int, default=0)
     parser.add_argument('-n', '--exp_name', type=str, default='adnimagin_experiment')
     parser.add_argument('-k', '--k_fold', type=int, default=2) #5
-    parser.add_argument('-b', '--minibatch_size', type=int, default=3)
+    parser.add_argument('-b', '--minibatch_size', type=int, default=2) #3
 
     parser.add_argument('-ds', '--data_dir', type=str, default='../data')
     parser.add_argument('-sd', '--splits_dir', type=str, default='../splits')
@@ -18,9 +29,9 @@ def parse():
     # parser.add_argument('--roi', type=str, default='schaefer', choices=['scahefer', 'aal', 'destrieux', 'harvard_oxford'])
     parser.add_argument('--fwhm', type=float, default=None)
 
-    parser.add_argument('--window_size', type=int, default=50)
-    parser.add_argument('--window_stride', type=int, default=3)
-    parser.add_argument('--dynamic_length', type=int, default=600)
+    parser.add_argument('--window_size', type=int, default=5) #50
+    parser.add_argument('--window_stride', type=int, default=1) #3
+    parser.add_argument('--dynamic_length', type=int, default=None) #600
 
     parser.add_argument('--lr', type=float, default=0.0005)
     parser.add_argument('--max_lr', type=float, default=0.001)

@@ -4,20 +4,22 @@ import random
 import torch
 import numpy as np
 from model import *
-from adni_3d import ADNI
+from dataset import ADNI
 from tqdm import tqdm
 from einops import repeat
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 
 
-def step(model, criterion, dyn_v, dyn_a, sampling_endpoints, t, label, reg_lambda, clip_grad=0.0, device='cpu', optimizer=None, scheduler=None):
+def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, label, reg_lambda, clip_grad=0.0, device='cpu', optimizer=None, scheduler=None):
     if optimizer is None: model.eval()
     else: model.train()
 
     # run model
-    logit, attention, latent, reg_ortho = model(dyn_v.to(device), dyn_a.to(device), t.to(device), sampling_endpoints)
-    loss = criterion(logit, label.to(device))
+    logit, attention, latent, reg_ortho = model(all_dyn_v, all_dyn_a, all_t, all_sampling_endpoints)
+
+    logit = torch.sum(logit, dim=1) # TODO consult about this step
+    loss = criterion(logit, label)
     reg_ortho *= reg_lambda
     loss += reg_ortho
 
@@ -35,11 +37,12 @@ def step(model, criterion, dyn_v, dyn_a, sampling_endpoints, t, label, reg_lambd
 
 def process_input_data(
         x,
+        device,
         window_size=None,
-        window_stride=None, 
+        window_stride=None,
         minibatch_size=None,
         nums_nodes=None,
-        dynamic_length=None,
+        dynamic_length=None
     ):
     all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t = [], [], [], []
     for r_i, x_ss in enumerate(x['slices_per_atlas']):
@@ -71,21 +74,61 @@ def process_input_data(
             
         t = x_ss.permute(1,0,2)
         
-        all_dyn_a.append(dyn_a)
+        all_dyn_a.append(dyn_a.to(device))
         all_sampling_endpoints.append(sampling_endpoints)
-        all_dyn_v.append(dyn_v)
-        all_t.append(t)
+        all_dyn_v.append(dyn_v.to(device))
+        all_t.append(t.to(device))
     
-    return all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, x['label']
+    return all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, x['label'].to(device)
 
+def summarize_results(
+                logger, summary_writer, k,
+                loss_accumulate, dataloader, reg_ortho_accumulate,
+                epoch, attentions
+            ):
+    samples = logger.get(k)
+    metrics = logger.evaluate(k)
+    summary_writer.add_scalar('loss', loss_accumulate/len(dataloader), epoch)
+    summary_writer.add_scalar('reg_ortho', reg_ortho_accumulate/len(dataloader), epoch)
+    summary_writer.add_pr_curve('precision-recall', samples['true'], samples['prob'][:,1], epoch)
+    [summary_writer.add_scalar(key, value, epoch) for key, value in metrics.items() if not key=='fold']
 
+    # TODO think what to do instead about this
+    for atlas_name, att in attentions.items():
+        for key, value in att.items():
+            summary_writer.add_image(
+                f"{atlas_name}_{key}",
+                make_grid(
+                    value[-1].unsqueeze(1), 
+                    normalize=True, scale_each=True
+                ),
+                epoch
+            )
+    summary_writer.flush()
+    return samples, metrics
 
+def log_fold(logger, target_dir, k, fold_attentions, latent_accumulates):
+    os.makedirs(target_dir, exist_ok=True)
+    logger.to_csv(target_dir, k)
+    for atlas_name, att in fold_attentions.items():
+        save_dir = os.path.join(target_dir, 'attention', atlas_name, str(k))
+        os.makedirs(save_dir, exist_ok=True)
+        for key, value in att.items():
+            np.save(
+                os.path.join(save_dir, f'{key}.npy'), 
+                np.concatenate(value)
+            )
+    
+    for atlas_name, lat in latent_accumulates.items():
+        np.save(
+            os.path.join(target_dir, 'attention', atlas_name, str(k), 'latent.npy'),
+            np.concatenate(lat)
+        )
 
 def train(argv):
     # make directories
     os.makedirs(os.path.join(argv.targetdir, 'model'), exist_ok=True)
     os.makedirs(os.path.join(argv.targetdir, 'summary'), exist_ok=True)
-    os.makedirs(os.path.join(argv.targetdir, 'attention'), exist_ok=True)
 
     # set seed and device
     torch.manual_seed(argv.seed)
@@ -103,14 +146,26 @@ def train(argv):
         argv.splits_dir,
         # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,
-        smoothing_fwhm=argv.fwhm,
-        num_classes=3,
-        depth_of_slice=40,
-        slicing_stride=5
+        # smoothing_fwhm=argv.fwhm,
+        num_classes=argv.num_classes,
+        depth_of_slice=argv.depth_of_slice,
+        slicing_stride=argv.slicing_stride,
+        device=device,
+        parallize_brains=argv.parallize_brains
     )
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=argv.minibatch_size, shuffle=False, num_workers=4, pin_memory=True)
-    dataloader_test = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
-    breakpoint()
+
+    n_workers=0 #4
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=argv.minibatch_size, shuffle=False,
+        num_workers=n_workers,
+        # pin_memory=True
+    )
+    dataloader_test = torch.utils.data.DataLoader(
+        dataset, batch_size=1, shuffle=False, 
+        num_workers=n_workers,
+        # pin_memory=True
+    )
+
     logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
     # resume checkpoint if file exists
@@ -133,24 +188,24 @@ def train(argv):
 
         # set dataloader
         dataset.set_fold(k, train=True)
-        breakpoint()
+
         # define model
         model = ModelIMAGIN(
             input_dims=dataset.nums_nodes,
             hidden_dims=argv.hidden_dims,
-            num_classes=2,
+            num_classes=dataset.num_classes,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
         )
-        breakpoint()
+
         model.to(device)
         if checkpoint['model'] is not None: model.load_state_dict(checkpoint['model'])
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss() if dataset.num_classes > 1 else torch.nn.MSELoss()
 
-        breakpoint()
+
         # define optimizer and learning rate scheduler
         optimizer = torch.optim.Adam(model.parameters(), lr=argv.lr)
-        breakpoint()
+
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer, max_lr=argv.max_lr, epochs=argv.num_epochs, 
             steps_per_epoch=len(dataloader),
@@ -159,7 +214,6 @@ def train(argv):
         if checkpoint['optimizer'] is not None: optimizer.load_state_dict(checkpoint['optimizer'])
         if checkpoint['scheduler'] is not None: scheduler.load_state_dict(checkpoint['scheduler'])
 
-        breakpoint()
         # define logging objects
         summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'train'), )
         summary_writer_val = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'val'), )
@@ -168,7 +222,6 @@ def train(argv):
 
         best_accuracy = 0
         best_model = None
-
         # start training
         for epoch in range(checkpoint['epoch'], argv.num_epochs):
             logger.initialize(k)
@@ -179,32 +232,33 @@ def train(argv):
                 # process input data
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
-                        x, 
+                        x,
+                        device,
                         window_size=argv.window_size,
                         window_stride=argv.window_stride, 
-                        num_nodes=dataset.nums_nodes,
+                        nums_nodes=dataset.nums_nodes,
                         minibatch_size=argv.minibatch_size,
-                        dynamic_length=argv.dynamic_length,
-                        
+                        dynamic_length=argv.dynamic_length
                     )
-                breakpoint()
 
-
-                logit, loss, attention, latent, reg_ortho = step(
+                logit, loss, attentions, latents, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=all_dyn_v,
-                    dyn_a=all_dyn_a,
-                    sampling_endpoints=all_sampling_endpoints,
-                    t=all_t,
+                    all_dyn_v=all_dyn_v,
+                    all_dyn_a=all_dyn_a,
+                    all_sampling_endpoints=all_sampling_endpoints,
+                    all_t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
                     device=device,
                     optimizer=optimizer,
-                    scheduler=scheduler)
+                    scheduler=scheduler
+                )
+                
                 pred = logit.argmax(1)
                 prob = logit.softmax(1)
+
                 if np.isnan(prob.detach().cpu().numpy()).any():
                     print('nan')
                 loss_accumulate += loss.detach().cpu().numpy()
@@ -213,14 +267,11 @@ def train(argv):
                 summary_writer.add_scalar('lr', scheduler.get_last_lr()[0], i+epoch*len(dataloader))
 
             # summarize results
-            samples = logger.get(k)
-            metrics = logger.evaluate(k)
-            summary_writer.add_scalar('loss', loss_accumulate/len(dataloader), epoch)
-            summary_writer.add_scalar('reg_ortho', reg_ortho_accumulate/len(dataloader), epoch)
-            summary_writer.add_pr_curve('precision-recall', samples['true'], samples['prob'][:,1], epoch)
-            [summary_writer.add_scalar(key, value, epoch) for key, value in metrics.items() if not key=='fold']
-            [summary_writer.add_image(key, make_grid(value[-1].unsqueeze(1), normalize=True, scale_each=True), epoch) for key, value in attention.items()]
-            summary_writer.flush()
+            samples, metrics = summarize_results(
+                logger, summary_writer, k,
+                loss_accumulate, dataloader, reg_ortho_accumulate,
+                epoch, attentions
+            )
             print("TRAIN:", metrics)
 
             # save checkpoint
@@ -244,20 +295,21 @@ def train(argv):
                     all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                         process_input_data(
                             x, 
+                            device,
                             window_size=argv.window_size,
                             window_stride=argv.window_stride, 
                             minibatch_size=argv.minibatch_size,
-                            num_nodes=dataset.nums_nodes,
+                            nums_nodes=dataset.nums_nodes,
                             dynamic_length=None
                         )
 
-                    logit, loss, attention, latent, reg_ortho = step(
+                    logit, loss, attentions, latents, reg_ortho = step(
                         model=model,
                         criterion=criterion,
-                        dyn_v=all_dyn_v,
-                        dyn_a=all_dyn_a,
-                        sampling_endpoints=all_sampling_endpoints,
-                        t=all_t,
+                        all_dyn_v=all_dyn_v,
+                        all_dyn_a=all_dyn_a,
+                        all_sampling_endpoints=all_sampling_endpoints,
+                        all_t=all_t,
                         label=label,
                         reg_lambda=argv.reg_lambda,
                         clip_grad=argv.clip_grad,
@@ -273,15 +325,11 @@ def train(argv):
 
 
             # summarize results
-            samples = logger_val.get(k)
-            metrics = logger_val.evaluate(k)
-            summary_writer_val.add_scalar('loss', loss_accumulate / len(dataloader_test), epoch)
-            summary_writer_val.add_scalar('reg_ortho', reg_ortho_accumulate / len(dataloader_test), epoch)
-            summary_writer_val.add_pr_curve('precision-recall', samples['true'], samples['prob'][:, 1], epoch)
-            [summary_writer_val.add_scalar(key, value, epoch) for key, value in metrics.items() if not key == 'fold']
-            [summary_writer_val.add_image(key, make_grid(value[-1].unsqueeze(1), normalize=True, scale_each=True), epoch) for
-             key, value in attention.items()]
-            summary_writer_val.flush()
+            samples, metrics = summarize_results(
+                logger_val, summary_writer_val, k,
+                loss_accumulate, dataloader_test, reg_ortho_accumulate,
+                epoch, attentions
+            )
             print("VAL:", metrics)
 
             if metrics['accuracy'] > best_accuracy or (metrics['accuracy'] == best_accuracy and metrics['roc_auc'] > best_auroc):
@@ -291,49 +339,64 @@ def train(argv):
                 print("BEST MODEL")
 
         # finalize fold
-        torch.save(best_model, os.path.join(argv.targetdir, 'model', str(k), 'model.pth'))
+        if best_model is not None:
+            torch.save(best_model, os.path.join(argv.targetdir, 'model', str(k), 'model.pth'))
+        else:
+            print('MODEL IS NONE, TO BE LOADED')
+            epoch = argv.num_epochs
+            # k = argv.k_fold
+
         checkpoint.update({'epoch': 0, 'model': None, 'optimizer': None, 'scheduler': None})
 
         # final validation results
-        os.makedirs(os.path.join(argv.targetdir, 'attention', str(k)), exist_ok=True)
+        for atlas_name in dataset.atlases_names:
+            os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(k)), exist_ok=True)
 
         model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
-
+        
         # define logging objects
-        fold_attention = {'node_attention': [], 'time_attention': []}
+        fold_attentions = {
+            atlas_name: {'node_attention': [], 'time_attention': []}
+            for atlas_name in dataset.atlases_names
+        }
         summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
 
         logger_test.initialize(k)
         dataset.set_fold(k, train=False)
         loss_accumulate = 0.0
         reg_ortho_accumulate = 0.0
-        latent_accumulate = []
+        latent_accumulates = {
+            atlas_name: [] for atlas_name in dataset.atlases_names
+        }
         for i, x in enumerate(tqdm(dataloader_test, ncols=60, desc=f'k:{k}')):
             with torch.no_grad():
                 # process input data                
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
                         x, 
+                        device,
                         window_size=argv.window_size,
                         window_stride=argv.window_stride, 
                         minibatch_size=argv.minibatch_size,
-                        num_nodes=dataset.nums_nodes,
+                        nums_nodes=dataset.nums_nodes,
                         dynamic_length=None
                     )
 
-                logit, loss, attention, latent, reg_ortho = step(
+                logit, loss, attentions, latents, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=all_dyn_v,
-                    dyn_a=all_dyn_a,
-                    sampling_endpoints=all_sampling_endpoints,
-                    t=all_t,
+                    all_dyn_v=all_dyn_v,
+                    all_dyn_a=all_dyn_a,
+                    all_sampling_endpoints=all_sampling_endpoints,
+                    all_t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
                     device=device,
                     optimizer=None,
-                    scheduler=None)
+                    scheduler=None
+                )
+
                 pred = logit.argmax(1)
                 prob = logit.softmax(1)
                 logger_test.add(k=k, pred=pred.detach().cpu().numpy(), true=label.detach().cpu().numpy(),
@@ -341,34 +404,38 @@ def train(argv):
                 loss_accumulate += loss.detach().cpu().numpy()
                 reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
 
-                fold_attention['node_attention'].append(attention['node-attention'].detach().cpu().numpy())
-                fold_attention['time_attention'].append(attention['time-attention'].detach().cpu().numpy())
-                latent_accumulate.append(latent.detach().cpu().numpy())
+                for (atlas_name, att), (_, lat) in zip(attentions.items(), latents.items()):
+                    fold_attentions[atlas_name]['node_attention'].append(
+                        att['node-attention'].detach().cpu().numpy()
+                    )
+                    fold_attentions[atlas_name]['time_attention'].append(
+                        att['time-attention'].detach().cpu().numpy()
+                    )
+                    latent_accumulates[atlas_name].append(lat.detach().cpu().numpy())
 
         # summarize results
-        samples = logger_test.get(k)
-        metrics = logger_test.evaluate(k)
-        summary_writer_test.add_scalar('loss', loss_accumulate / len(dataloader))
-        summary_writer_test.add_scalar('reg_ortho', reg_ortho_accumulate / len(dataloader))
-        summary_writer_test.add_pr_curve('precision-recall', samples['true'], samples['prob'][:, 1])
-        [summary_writer_test.add_scalar(key, value) for key, value in metrics.items() if not key == 'fold']
-        [summary_writer_test.add_image(key, make_grid(value[-1].unsqueeze(1), normalize=True, scale_each=True)) for
-         key, value in attention.items()]
-        summary_writer_test.flush()
+        samples, metrics = summarize_results(
+            logger_test, summary_writer_test, k,
+            loss_accumulate, dataloader, reg_ortho_accumulate,
+            epoch, attentions
+        )
         print("FINAL VAL:", metrics)
 
         # finalize fold
-        logger_test.to_csv(argv.targetdir, k)
-        if argv.dataset == 'rest':
-            [np.save(os.path.join(argv.targetdir, 'attention', str(k), f'{key}.npy'), np.concatenate(value)) for
-             key, value in fold_attention.items()]
-        np.save(os.path.join(argv.targetdir, 'attention', str(k), 'latent.npy'), np.concatenate(latent_accumulate))
-        del fold_attention
+        log_fold(
+            logger=logger_test,
+            target_dir=argv.targetdir, 
+            k=k, 
+            fold_attentions=fold_attentions, 
+            latent_accumulates=latent_accumulates
+        )
+        del fold_attentions
 
     # finalize experiment
     logger_test.to_csv(argv.targetdir)
     final_metrics = logger_test.evaluate()
     print(final_metrics)
+
     torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))
 
     summary_writer.close()
@@ -378,67 +445,78 @@ def train(argv):
 
 
 def test(argv):
-    os.makedirs(os.path.join(argv.targetdir, 'attention'), exist_ok=True)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # define dataset
     # dataset = ADNI(argv.sourcedir, dynamic_length=argv.dynamic_length, k_fold=argv.k_fold, smoothing_fwhm=argv.fwhm)
-    dataset = ADNI(
+    dataset: ADNI = ADNI(
         argv.data_dir,
         argv.splits_dir,
         # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,
-        smoothing_fwhm=argv.fwhm,
-        num_classes=3,
-        depth_of_slice=40,
-        slicing_stride=5
+        # smoothing_fwhm=argv.fwhm,
+        num_classes=argv.num_classes,
+        depth_of_slice=argv.depth_of_slice,
+        slicing_stride=argv.slicing_stride,
+        parallize_brains=argv.parallize_brains
     )
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False)
+
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=argv.minibatch_size, shuffle=False)
     logger = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
     for k in range(argv.k_fold):
-        os.makedirs(os.path.join(argv.targetdir, 'attention', str(k)), exist_ok=True)
+
+        for atlas_name in dataset.atlases_names:
+            os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(k)), exist_ok=True)
 
         model = ModelIMAGIN(
-            input_dims=dataset.num_nodes,
+            input_dims=dataset.nums_nodes,
             hidden_dims=argv.hidden_dims,
             num_classes=dataset.num_classes,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
         )
         model.to(device)
+
+
         model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CrossEntropyLoss() if dataset.num_classes > 1 else torch.nn.MSELoss()
 
         # define logging objects
-        fold_attention = {'node_attention': [], 'time_attention': []}
+        fold_attentions = {
+            atlas_name: {'node_attention': [], 'time_attention': []}
+            for atlas_name in dataset.atlases_names
+        }
         summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
 
         logger.initialize(k)
         dataset.set_fold(k, train=False)
         loss_accumulate = 0.0
         reg_ortho_accumulate = 0.0
-        latent_accumulate = []
+        latent_accumulates = {
+            atlas_name: []
+            for atlas_name in dataset.atlases_names
+        }
         for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k}')):
             with torch.no_grad():
                 # process input data
                 all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                     process_input_data(
                         x, 
+                        device,
                         window_size=argv.window_size,
                         window_stride=argv.window_stride, 
                         minibatch_size=argv.minibatch_size,
-                        num_nodes=dataset.nums_nodes,
-                        dynamic_length=None,
+                        nums_nodes=dataset.nums_nodes,
+                        dynamic_length=None
                     )
-
-                logit, loss, attention, latent, reg_ortho = step(
+                logit, loss, attentions, latents, reg_ortho = step(
                     model=model,
                     criterion=criterion,
-                    dyn_v=all_dyn_v,
-                    dyn_a=all_dyn_a,
-                    sampling_endpoints=all_sampling_endpoints,
-                    t=all_t,
+                    all_dyn_v=all_dyn_v,
+                    all_dyn_a=all_dyn_a,
+                    all_sampling_endpoints=all_sampling_endpoints,
+                    all_t=all_t,
                     label=label,
                     reg_lambda=argv.reg_lambda,
                     clip_grad=argv.clip_grad,
@@ -451,35 +529,34 @@ def test(argv):
                 loss_accumulate += loss.detach().cpu().numpy()
                 reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
 
-                fold_attention['node_attention'].append(attention['node-attention'].detach().cpu().numpy())
-                fold_attention['time_attention'].append(attention['time-attention'].detach().cpu().numpy())
-                latent_accumulate.append(latent.detach().cpu().numpy())
+                for (atlas_name, att), (_, lat) in zip(attentions.items(), latents.items()):
+                    fold_attentions[atlas_name]['node_attention'].append(
+                        att['node-attention'].detach().cpu().numpy()
+                    )
+                    fold_attentions[atlas_name]['time_attention'].append(
+                        att['time-attention'].detach().cpu().numpy()
+                    )
+                    latent_accumulates[atlas_name].append(lat.detach().cpu().numpy())
 
         # summarize results
-        samples = logger.get(k)
-        metrics = logger.evaluate(k)
-        summary_writer.add_scalar('loss', loss_accumulate/len(dataloader))
-        summary_writer.add_scalar('reg_ortho', reg_ortho_accumulate/len(dataloader))
-        summary_writer.add_pr_curve('precision-recall', samples['true'], samples['prob'][:,1])
-        [summary_writer.add_scalar(key, value) for key, value in metrics.items() if not key=='fold']
-        [summary_writer.add_image(key, make_grid(value[-1].unsqueeze(1), normalize=True, scale_each=True)) for key, value in attention.items()]
-        summary_writer.flush()
+        samples, metrics = summarize_results(
+            logger, summary_writer, k,
+            loss_accumulate, dataloader, reg_ortho_accumulate,
+            None, attentions
+        )
         print(metrics)
 
-        # finalize fold
-        logger.to_csv(argv.targetdir, k)
-        if argv.dataset=='rest':
-            [np.save(os.path.join(argv.targetdir, 'attention', str(k), f'{key}.npy'), np.concatenate(value)) for key, value in fold_attention.items()]
-        elif argv.dataset=='task':
-            for key, value in fold_attention.items():
-                os.makedirs(os.path.join(argv.targetdir, 'attention', str(k), key), exist_ok=True)
-                for idx, task in enumerate(dataset.task_list):
-                    np.save(os.path.join(argv.targetdir, 'attention', str(k), key, f'{task}.npy'), np.concatenate([v for (v, l) in zip(value, samples['true']) if l==idx]))
-        else:
-            raise
-        np.save(os.path.join(argv.targetdir, 'attention', str(k), 'latent.npy'), np.concatenate(latent_accumulate))
-        del fold_attention
 
+        # finalize fold
+        log_fold(
+            logger=logger,
+            target_dir=argv.targetdir, 
+            k=k, 
+            fold_attentions=fold_attentions, 
+            latent_accumulates=latent_accumulates
+        )
+        del fold_attentions
+        
     # finalize experiment
     logger.to_csv(argv.targetdir)
     final_metrics = logger.evaluate()

@@ -96,12 +96,13 @@ class ModelESTAGIN(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         for i in range(num_layers):
-            self.gnn_layers.append(GINConv(
-                nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(),
-                                         nn.Linear(hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU())
-
-            ))
-            # self.gnn_layers.append(LayerGIN(hidden_dim, hidden_dim, hidden_dim))
+            # self.gnn_layers.append(GINConv(
+            #     nn.Sequential(
+            #         nn.Linear(input_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU(),
+            #         nn.Linear(hidden_dim, hidden_dim), nn.BatchNorm1d(hidden_dim), nn.ReLU()
+            #     )
+            # ))
+            self.gnn_layers.append(LayerGIN(hidden_dim, hidden_dim, hidden_dim))
             self.readout_modules.append(readout_module(hidden_dim=hidden_dim, input_dim=input_dim, dropout=0.1))
             self.transformer_modules.append(ModuleTransformer(hidden_dim, 2*hidden_dim, num_heads=num_heads, dropout=0.1))
             # self.linear_layers.append(nn.Linear(hidden_dim, num_classes))
@@ -143,7 +144,7 @@ class ModelESTAGIN(nn.Module):
 
         a = self._collate_adjacency(a, self.sparsity)
         for layer, (G, R, T) in enumerate(zip(self.gnn_layers, self.readout_modules, self.transformer_modules)):
-            h = G(h, a)
+            h = G(h, a.to_sparse_csr())
             h_bridge = rearrange(h, '(b t n) c -> t b n c', t=num_timepoints, b=minibatch_size, n=num_nodes)
             h_readout, node_attn = R(h_bridge, node_axis=2)
             if self.token_parameter is not None: h_readout = torch.cat([h_readout, self.token_parameter[layer].expand(-1,h_readout.shape[1],-1)])
@@ -160,6 +161,7 @@ class ModelESTAGIN(nn.Module):
 
         attention['node-attention'] = torch.stack(attention['node-attention'], dim=1).detach().cpu()
         attention['time-attention'] = torch.stack(attention['time-attention'], dim=1).detach().cpu()
+
         latent = torch.stack(latent_list, dim=1)
 
         return latent, attention, reg_ortho
@@ -168,7 +170,6 @@ class ModelESTAGIN(nn.Module):
 class ModelIMAGIN(nn.Module):
     def __init__(self, input_dims, hidden_dims, num_classes, num_layers, sparsities, dropout=0.5, cls_token='sum', readout='sero'):
         super(ModelIMAGIN, self).__init__()
-
         self.aal = ModelESTAGIN(input_dim=input_dims[0], hidden_dim=hidden_dims[0], num_classes=num_classes, num_heads=1, num_layers=num_layers[0], sparsity=sparsities[0], dropout=dropout, cls_token=cls_token, readout=readout)
         self.cc200 = ModelESTAGIN(input_dim=input_dims[1], hidden_dim=hidden_dims[1], num_classes=num_classes, num_heads=1, num_layers=num_layers[1], sparsity=sparsities[1], dropout=dropout, cls_token=cls_token, readout=readout)
         self.schaefer = ModelESTAGIN(input_dim=input_dims[2], hidden_dim=hidden_dims[2], num_classes=num_classes, num_heads=1, num_layers=num_layers[2], sparsity=sparsities[2], dropout=dropout, cls_token=cls_token, readout=readout)
@@ -176,9 +177,13 @@ class ModelIMAGIN(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, v, a, t, sampling_endpoints):
-        latent_aal, attention_aal, reg_ortho_aal = self.aal(v[0], a[0], t, sampling_endpoints)
-        latent_cc200, attention_cc200, reg_ortho_cc200 = self.cc200(v[1], a[1], t, sampling_endpoints)
-        latent_schaefer, attention_schaefer, reg_ortho_schaefer = self.schaefer(v[2], a[2], t, sampling_endpoints)
+        # TODO discuss how come t used to be only one t instead of 3 (per atlas)
+        latent_aal, attention_aal, reg_ortho_aal =\
+            self.aal(v[0], a[0], t[0], sampling_endpoints[0])
+        latent_cc200, attention_cc200, reg_ortho_cc200 =\
+            self.cc200(v[1], a[1], t[1], sampling_endpoints[1])
+        latent_schaefer, attention_schaefer, reg_ortho_schaefer =\
+            self.schaefer(v[2], a[2], t[2], sampling_endpoints[2])
 
         logit = self.dropout(self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2)))
         reg_ortho = reg_ortho_aal + reg_ortho_cc200 + reg_ortho_schaefer
