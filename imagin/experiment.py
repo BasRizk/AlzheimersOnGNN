@@ -18,7 +18,6 @@ def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, 
     # run model
     logit, attention, latent, reg_ortho = model(all_dyn_v, all_dyn_a, all_t, all_sampling_endpoints)
 
-    logit = torch.sum(logit, dim=1) # TODO consult about this step
     loss = criterion(logit, label)
     reg_ortho *= reg_lambda
     loss += reg_ortho
@@ -31,6 +30,8 @@ def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, 
        optimizer.step()
        if scheduler is not None:
            scheduler.step()
+    # else:
+    #     breakpoint()
 
     return logit, loss, attention, latent, reg_ortho
 
@@ -79,6 +80,7 @@ def process_input_data(
         all_dyn_v.append(dyn_v.to(device))
         all_t.append(t.to(device))
     
+    # breakpoint()
     return all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, x['label'].to(device)
 
 def summarize_results(
@@ -125,6 +127,110 @@ def log_fold(logger, target_dir, k, fold_attentions, latent_accumulates):
             np.concatenate(lat)
         )
 
+
+
+def inference(
+        dataset=None,
+        dataloader=None,
+        k=None,
+        model=None,
+        criterion=None,
+        device=None,
+        argv=None,
+        logger=None,
+        summary_writer=None,
+        str_pre_metrics="",
+        test_logging=True, # FOR FILE LOGGING
+        set_fold=True
+    ):
+
+    if test_logging:
+        # define logging objects
+        fold_attentions = {
+            atlas_name: {'node_attention': [], 'time_attention': []}
+            for atlas_name in dataset.atlases_names
+        }
+        latent_accumulates = {
+            atlas_name: []
+            for atlas_name in dataset.atlases_names
+        }
+
+    logger.initialize(k)
+    if set_fold:
+        dataset.set_fold(k, train=False)
+    loss_accumulate = 0.0
+    reg_ortho_accumulate = 0.0
+    
+    for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k}')):
+        with torch.no_grad():
+            # process input data
+            all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
+                process_input_data(
+                    x, 
+                    device,
+                    window_size=argv.window_size,
+                    window_stride=argv.window_stride, 
+                    minibatch_size=argv.minibatch_size,
+                    nums_nodes=dataset.nums_nodes,
+                    dynamic_length=None
+                )
+            logit, loss, attentions, latents, reg_ortho = step(
+                model=model,
+                criterion=criterion,
+                all_dyn_v=all_dyn_v,
+                all_dyn_a=all_dyn_a,
+                all_sampling_endpoints=all_sampling_endpoints,
+                all_t=all_t,
+                label=label,
+                reg_lambda=argv.reg_lambda,
+                clip_grad=argv.clip_grad,
+                device=device,
+                optimizer=None,
+                scheduler=None
+            )
+            pred = logit.argmax(1)
+            prob = logit.softmax(1)
+            logger.add(
+                k=k, pred=pred.detach().cpu().numpy(), 
+                true=label.detach().cpu().numpy(), 
+                prob=prob.detach().cpu().numpy()
+            )
+            loss_accumulate += loss.detach().cpu().numpy()
+            reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
+
+            if test_logging:
+                for (atlas_name, att), (_, lat) in zip(attentions.items(), latents.items()):
+                    fold_attentions[atlas_name]['node_attention'].append(
+                        att['node-attention'].detach().cpu().numpy()
+                    )
+                    fold_attentions[atlas_name]['time_attention'].append(
+                        att['time-attention'].detach().cpu().numpy()
+                    )
+                    latent_accumulates[atlas_name].append(lat.detach().cpu().numpy())
+
+    # summarize results
+    samples, metrics = summarize_results(
+        logger, summary_writer, k,
+        loss_accumulate, dataloader, reg_ortho_accumulate,
+        None, attentions
+    )
+    print(str_pre_metrics, metrics, f'loss = {loss_accumulate}')
+
+    if test_logging:
+        # finalize fold
+        log_fold(
+            logger=logger,
+            target_dir=argv.targetdir, 
+            k=k, 
+            fold_attentions=fold_attentions, 
+            latent_accumulates=latent_accumulates
+        )
+        del fold_attentions
+
+    return metrics
+            
+
+
 def train(argv):
     # make directories
     os.makedirs(os.path.join(argv.targetdir, 'model'), exist_ok=True)
@@ -146,6 +252,7 @@ def train(argv):
         argv.data_type,
         argv.atlas_dir,
         argv.splits_dir,
+        mode="Train",
         # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,
         # smoothing_fwhm=argv.fwhm,
@@ -274,7 +381,7 @@ def train(argv):
                 loss_accumulate, dataloader, reg_ortho_accumulate,
                 epoch, attentions
             )
-            print("TRAIN:", metrics)
+            print("TRAIN:", metrics, f'loss = {loss_accumulate}')
 
             # save checkpoint
             torch.save({
@@ -283,56 +390,23 @@ def train(argv):
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()},
-                os.path.join(argv.targetdir, 'checkpoint.pth'))
+                os.path.join(argv.targetdir, 'checkpoint.pth')
+            )
 
             # check validation results
-            logger_val.initialize(k)
-            dataset.set_fold(k, train=False)
-            loss_accumulate = 0.0
-            reg_ortho_accumulate = 0.0
-            for i, x in enumerate(tqdm(dataloader_test, ncols=60, desc=f'k:{k} e:{epoch}')):
-                with torch.no_grad():
-                    # process input data
-           
-                    all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
-                        process_input_data(
-                            x, 
-                            device,
-                            window_size=argv.window_size,
-                            window_stride=argv.window_stride, 
-                            minibatch_size=argv.minibatch_size,
-                            nums_nodes=dataset.nums_nodes,
-                            dynamic_length=None
-                        )
-
-                    logit, loss, attentions, latents, reg_ortho = step(
-                        model=model,
-                        criterion=criterion,
-                        all_dyn_v=all_dyn_v,
-                        all_dyn_a=all_dyn_a,
-                        all_sampling_endpoints=all_sampling_endpoints,
-                        all_t=all_t,
-                        label=label,
-                        reg_lambda=argv.reg_lambda,
-                        clip_grad=argv.clip_grad,
-                        device=device,
-                        optimizer=None,
-                        scheduler=None)
-                    pred = logit.argmax(1)
-                    prob = logit.softmax(1)
-                    logger_val.add(k=k, pred=pred.detach().cpu().numpy(), true=label.detach().cpu().numpy(),
-                               prob=prob.detach().cpu().numpy())
-                    loss_accumulate += loss.detach().cpu().numpy()
-                    reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
-
-
-            # summarize results
-            samples, metrics = summarize_results(
-                logger_val, summary_writer_val, k,
-                loss_accumulate, dataloader_test, reg_ortho_accumulate,
-                epoch, attentions
+            metrics = inference( # VAL
+                dataset=dataset,    
+                dataloader=dataloader_test,
+                k=k,
+                model=model,
+                criterion=criterion,
+                device=device,
+                argv=argv,
+                logger=logger_val,
+                summary_writer=summary_writer_val,
+                str_pre_metrics="VAL",
+                test_logging=False
             )
-            print("VAL:", metrics)
 
             if metrics['accuracy'] > best_accuracy or (metrics['accuracy'] == best_accuracy and metrics['roc_auc'] > best_auroc):
                 best_accuracy = metrics['accuracy']
@@ -356,87 +430,26 @@ def train(argv):
 
         model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
         
-        # define logging objects
-        fold_attentions = {
-            atlas_name: {'node_attention': [], 'time_attention': []}
-            for atlas_name in dataset.atlases_names
-        }
+
         summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
-
-        logger_test.initialize(k)
-        dataset.set_fold(k, train=False)
-        loss_accumulate = 0.0
-        reg_ortho_accumulate = 0.0
-        latent_accumulates = {
-            atlas_name: [] for atlas_name in dataset.atlases_names
-        }
-        for i, x in enumerate(tqdm(dataloader_test, ncols=60, desc=f'k:{k}')):
-            with torch.no_grad():
-                # process input data                
-                all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
-                    process_input_data(
-                        x, 
-                        device,
-                        window_size=argv.window_size,
-                        window_stride=argv.window_stride, 
-                        minibatch_size=argv.minibatch_size,
-                        nums_nodes=dataset.nums_nodes,
-                        dynamic_length=None
-                    )
-
-                logit, loss, attentions, latents, reg_ortho = step(
-                    model=model,
-                    criterion=criterion,
-                    all_dyn_v=all_dyn_v,
-                    all_dyn_a=all_dyn_a,
-                    all_sampling_endpoints=all_sampling_endpoints,
-                    all_t=all_t,
-                    label=label,
-                    reg_lambda=argv.reg_lambda,
-                    clip_grad=argv.clip_grad,
-                    device=device,
-                    optimizer=None,
-                    scheduler=None
-                )
-
-                pred = logit.argmax(1)
-                prob = logit.softmax(1)
-                logger_test.add(k=k, pred=pred.detach().cpu().numpy(), true=label.detach().cpu().numpy(),
-                           prob=prob.detach().cpu().numpy())
-                loss_accumulate += loss.detach().cpu().numpy()
-                reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
-
-                for (atlas_name, att), (_, lat) in zip(attentions.items(), latents.items()):
-                    fold_attentions[atlas_name]['node_attention'].append(
-                        att['node-attention'].detach().cpu().numpy()
-                    )
-                    fold_attentions[atlas_name]['time_attention'].append(
-                        att['time-attention'].detach().cpu().numpy()
-                    )
-                    latent_accumulates[atlas_name].append(lat.detach().cpu().numpy())
-
-        # summarize results
-        samples, metrics = summarize_results(
-            logger_test, summary_writer_test, k,
-            loss_accumulate, dataloader, reg_ortho_accumulate,
-            epoch, attentions
-        )
-        print("FINAL VAL:", metrics)
-
-        # finalize fold
-        log_fold(
+        inference( # TEST
+            dataset=dataset,
+            dataloader=dataloader_test,
+            k=k,
+            model=model,
+            criterion=criterion,
+            device=device,
+            argv=argv,
             logger=logger_test,
-            target_dir=argv.targetdir, 
-            k=k, 
-            fold_attentions=fold_attentions, 
-            latent_accumulates=latent_accumulates
+            summary_writer=summary_writer_test,
+            str_pre_metrics="FINAL VAL",
+            test_logging=True
         )
-        del fold_attentions
 
     # finalize experiment
     logger_test.to_csv(argv.targetdir)
     final_metrics = logger_test.evaluate()
-    print(final_metrics)
+    print(final_metrics, f'loss = {loss_accumulate}')
 
     torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))
 
@@ -444,7 +457,6 @@ def train(argv):
     summary_writer_val.close()
     summary_writer_test.close()
     # os.remove(os.path.join(argv.targetdir, 'checkpoint.pth'))
-
 
 def test(argv):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -481,84 +493,23 @@ def test(argv):
         )
         model.to(device)
 
-
         model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
         criterion = torch.nn.CrossEntropyLoss() if dataset.num_classes > 1 else torch.nn.MSELoss()
-
-        # define logging objects
-        fold_attentions = {
-            atlas_name: {'node_attention': [], 'time_attention': []}
-            for atlas_name in dataset.atlases_names
-        }
         summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
 
-        logger.initialize(k)
-        dataset.set_fold(k, train=False)
-        loss_accumulate = 0.0
-        reg_ortho_accumulate = 0.0
-        latent_accumulates = {
-            atlas_name: []
-            for atlas_name in dataset.atlases_names
-        }
-        for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k}')):
-            with torch.no_grad():
-                # process input data
-                all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
-                    process_input_data(
-                        x, 
-                        device,
-                        window_size=argv.window_size,
-                        window_stride=argv.window_stride, 
-                        minibatch_size=argv.minibatch_size,
-                        nums_nodes=dataset.nums_nodes,
-                        dynamic_length=None
-                    )
-                logit, loss, attentions, latents, reg_ortho = step(
-                    model=model,
-                    criterion=criterion,
-                    all_dyn_v=all_dyn_v,
-                    all_dyn_a=all_dyn_a,
-                    all_sampling_endpoints=all_sampling_endpoints,
-                    all_t=all_t,
-                    label=label,
-                    reg_lambda=argv.reg_lambda,
-                    clip_grad=argv.clip_grad,
-                    device=device,
-                    optimizer=None,
-                    scheduler=None)
-                pred = logit.argmax(1)
-                prob = logit.softmax(1)
-                logger.add(k=k, pred=pred.detach().cpu().numpy(), true=label.detach().cpu().numpy(), prob=prob.detach().cpu().numpy())
-                loss_accumulate += loss.detach().cpu().numpy()
-                reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
-
-                for (atlas_name, att), (_, lat) in zip(attentions.items(), latents.items()):
-                    fold_attentions[atlas_name]['node_attention'].append(
-                        att['node-attention'].detach().cpu().numpy()
-                    )
-                    fold_attentions[atlas_name]['time_attention'].append(
-                        att['time-attention'].detach().cpu().numpy()
-                    )
-                    latent_accumulates[atlas_name].append(lat.detach().cpu().numpy())
-
-        # summarize results
-        samples, metrics = summarize_results(
-            logger, summary_writer, k,
-            loss_accumulate, dataloader, reg_ortho_accumulate,
-            None, attentions
-        )
-        print(metrics)
-
-
-        # finalize fold
-        log_fold(
+        inference(
+            dataset=dataset,
+            dataloader=dataloader,
+            k=k,
+            model=model,
+            criterion=criterion,
+            device=device,
+            argv=argv,
             logger=logger,
-            target_dir=argv.targetdir, 
-            k=k, 
-            fold_attentions=fold_attentions, 
-            latent_accumulates=latent_accumulates
-        )
-        del fold_attentions
+            summary_writer=summary_writer,
+            test_logging=True
+        )   
+        
         
     # finalize experiment
     logger.to_csv(argv.targetdir)

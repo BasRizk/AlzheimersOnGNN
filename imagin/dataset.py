@@ -47,7 +47,7 @@ class ADNI(Dataset):
             raise Exception(f'Data type {data_type} is not supported')
 
         self.parallized_brains = parallize_brains
-        self.n_processes = os.cpu_count() - 2
+        self.n_processes = os.cpu_count() - 1
         print(f'ADNI Dataset Processing using {self.n_processes} processes')
         if self.parallized_brains:
             print('..Parellizing over brains processing')
@@ -138,6 +138,7 @@ class ADNI(Dataset):
             self.k_fold = StratifiedKFold(k_fold, shuffle=True, random_state=0)
             self.k = None
         
+        # breakpoint()
         self.threading_pool.close()
         # self.num_classes = len(behavioral_df.unique())
         
@@ -207,7 +208,7 @@ class ADNI(Dataset):
             print('WRONG LABEL VALUE!!!')
             label = -100
         
-        slices = self.slices_stack_dict[idx]
+        slices = self.slices_stack_dict[sample_id]
         
         return {
             "id": sample_id,
@@ -286,10 +287,13 @@ class ADNI(Dataset):
 
         if self.parallized_brains:
             mapping_func = map
+            # print(f'processing {len(slices)} slices sequentially')
         else:
             mapping_func = lambda func, itr: self.threading_pool.map(
                 func, itr, chunksize=self.n_processes
             )
+            # print(f'processing {len(slices)} slices in parallel')
+            
         for ss in mapping_func(preprocess_slice, slices):
             for r_i, s in enumerate(ss):
                 data[r_i].append(s)

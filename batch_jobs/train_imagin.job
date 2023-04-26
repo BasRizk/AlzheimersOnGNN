@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#SBATCH --job-name=imagin_alz
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16GB
+#SBATCH --time=24:00:00
+#SBATCH --account=ajiteshs_1045
+#SBATCH --gres=gpu:p100:1
+#SBATCH --partition=gpu
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+SCRIPTS_DIR=batch_jobs
+ENV_NAME=alz
+
+module purge && echo "purged modules" &&\
+source $PWD/$SCRIPTS_DIR/load_env_on_carc.sh &&\
+conda activate $ENV_NAME &&\
+echo "done init and activating env: $ENV_NAME"
+
+sh $PWD/$SCRIPTS_DIR/train_imagin.sh $1

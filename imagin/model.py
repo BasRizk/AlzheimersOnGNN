@@ -71,8 +71,15 @@ class ModuleTransformer(nn.Module):
 
 
 class ModelESTAGIN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_classes, num_heads, num_layers, sparsity, dropout=0.5, cls_token='sum', readout='sero', garo_upscale=1.0):
+    def __init__(
+            self, input_dim, hidden_dim, num_classes, num_heads,
+            num_layers, sparsity, dropout=0.5, cls_token='sum', 
+            readout='sero', garo_upscale=1.0,
+            debug=False
+        ):
         super().__init__()
+        self.debug=debug
+
         assert cls_token in ['sum', 'mean', 'param']
         if cls_token=='sum': self.cls_token = lambda x: x.sum(0)
         elif cls_token=='mean': self.cls_token = lambda x: x.mean(0)
@@ -129,7 +136,8 @@ class ModelESTAGIN(nn.Module):
     def forward(self, v, a, t, sampling_endpoints):
         # assumes shape [minibatch x time x node x feature] for v
         # assumes shape [minibatch x time x node x node] for a
-        logit = 0.0
+        # logit = 0.0
+        
         reg_ortho = 0.0
         attention = {'node-attention': [], 'time-attention': []}
         latent_list = []
@@ -144,7 +152,7 @@ class ModelESTAGIN(nn.Module):
 
         a = self._collate_adjacency(a, self.sparsity)
         for layer, (G, R, T) in enumerate(zip(self.gnn_layers, self.readout_modules, self.transformer_modules)):
-            h = G(h, a.to_sparse_csr())
+            h = G(h, a)
             h_bridge = rearrange(h, '(b t n) c -> t b n c', t=num_timepoints, b=minibatch_size, n=num_nodes)
             h_readout, node_attn = R(h_bridge, node_axis=2)
             if self.token_parameter is not None: h_readout = torch.cat([h_readout, self.token_parameter[layer].expand(-1,h_readout.shape[1],-1)])
@@ -164,19 +172,26 @@ class ModelESTAGIN(nn.Module):
 
         latent = torch.stack(latent_list, dim=1)
 
+        # if self.debug:
+        #     breakpoint()
         return latent, attention, reg_ortho
 
 
 class ModelIMAGIN(nn.Module):
     def __init__(self, input_dims, hidden_dims, num_classes, num_layers, sparsities, dropout=0.5, cls_token='sum', readout='sero'):
         super(ModelIMAGIN, self).__init__()
-        self.aal = ModelESTAGIN(input_dim=input_dims[0], hidden_dim=hidden_dims[0], num_classes=num_classes, num_heads=1, num_layers=num_layers[0], sparsity=sparsities[0], dropout=dropout, cls_token=cls_token, readout=readout)
+        self.aal = ModelESTAGIN(
+            input_dim=input_dims[0], hidden_dim=hidden_dims[0],
+            num_classes=num_classes, num_heads=1, num_layers=num_layers[0],
+            sparsity=sparsities[0], dropout=dropout, cls_token=cls_token, readout=readout,
+            # debug=True
+        )
         self.cc200 = ModelESTAGIN(input_dim=input_dims[1], hidden_dim=hidden_dims[1], num_classes=num_classes, num_heads=1, num_layers=num_layers[1], sparsity=sparsities[1], dropout=dropout, cls_token=cls_token, readout=readout)
         self.schaefer = ModelESTAGIN(input_dim=input_dims[2], hidden_dim=hidden_dims[2], num_classes=num_classes, num_heads=1, num_layers=num_layers[2], sparsity=sparsities[2], dropout=dropout, cls_token=cls_token, readout=readout)
         self.linear = nn.Linear(hidden_dims[0]+hidden_dims[1]+hidden_dims[2], num_classes)
-        self.dropout = nn.Dropout(dropout)
+        # self.dropout = nn.Dropout(dropout)
 
-    def forward(self, v, a, t, sampling_endpoints):
+    def forward(self, v, a, t, sampling_endpoints, debug=False):
         # TODO discuss how come t used to be only one t instead of 3 (per atlas)
         latent_aal, attention_aal, reg_ortho_aal =\
             self.aal(v[0], a[0], t[0], sampling_endpoints[0])
@@ -185,8 +200,16 @@ class ModelIMAGIN(nn.Module):
         latent_schaefer, attention_schaefer, reg_ortho_schaefer =\
             self.schaefer(v[2], a[2], t[2], sampling_endpoints[2])
 
-        logit = self.dropout(self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2)))
+        # logit = self.dropout(self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2)))
+        logit = self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2))
+        
         reg_ortho = reg_ortho_aal + reg_ortho_cc200 + reg_ortho_schaefer
+
+        if debug:
+            breakpoint()
+            print(logit)    
+        
+        logit = torch.sum(logit, dim=1) # TODO consult about this step
 
         return logit, {'aal': attention_aal, 'cc200': attention_cc200, 'schaefer': attention_schaefer}, {'aal': latent_aal, 'cc200': latent_cc200, 'schaefer': latent_schaefer}, reg_ortho
 

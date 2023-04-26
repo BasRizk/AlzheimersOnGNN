@@ -6,7 +6,9 @@ import argparse
 def parse():
     parser = argparse.ArgumentParser(description='SPATIO-TEMPORAL-ATTENTION-GRAPH-ISOMORPHISM-NETWORK')
 
-    parser.add_argument('--clean_cache', action='store_true') # TODO EMPLOY IT
+    parser.add_argument('--clean_ckpt', action='store_true')
+    parser.add_argument('--clean_cache', action='store_true')
+    parser.add_argument('--no_kfold', action='store_true')
 
     parser.add_argument('--num_classes', type=int, default=3)
     parser.add_argument('--depth_of_slice', type=int, default=40)
@@ -27,17 +29,19 @@ def parse():
     data_type = 't1_volume'
     data_path = '/project/ajiteshs_1045/alzheimers/temp_t1linear_brains/'
     data_type = 't1_linear'
+    split_path = f'../splits/splits_{data_type}_toy'
     parser.add_argument(
         '--data_type', type=str, default=data_type,
         help='whether the data are processed using t1_linear or t1_volume pipeline'
     )
     parser.add_argument('-ds', '--data_dir', type=str, default=data_path)
     parser.add_argument('-ad', '--atlas_dir', type=str, default=atlas_path)
-    parser.add_argument('-sd', '--splits_dir', type=str, default='../splits')
+    parser.add_argument('-sd', '--splits_dir', type=str, default=split_path)
     parser.add_argument('-dt', '--targetdir', type=str, default='./result')
     
     # parser.add_argument('--dataset', type=str, default='rest', choices=['rest', 'task'])
     # parser.add_argument('--roi', type=str, default='schaefer', choices=['scahefer', 'aal', 'destrieux', 'harvard_oxford'])
+    # NOT USED
     parser.add_argument('--fwhm', type=float, default=None)
 
     parser.add_argument('--window_size', type=int, default=5) #50
@@ -49,12 +53,14 @@ def parse():
     parser.add_argument('--reg_lambda', type=float, default=0.00001)
     parser.add_argument('--clip_grad', type=float, default=0.0)
     parser.add_argument('--num_epochs', type=int, default=30)
+    # NOT USED
     parser.add_argument('--num_heads', type=int, default=1)
     parser.add_argument('--num_layers', nargs="+", type=int, default=[4, 4, 4])
     parser.add_argument('--hidden_dims', nargs="+", type=int, default=[128, 128,128])
     parser.add_argument('--sparsities', nargs="+", type=int, default=[30, 30, 30])
     parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--readout', type=str, default='sero', choices=['garo', 'sero', 'mean'])
+    # NOT USED
+    parser.add_argument('--readout', type=str, default='sero', choices=['garo', 'sero', 'mean']) 
     parser.add_argument('--cls_token', type=str, default='sum', choices=['sum', 'mean', 'param'])
 
     # parser.add_argument('--num_clusters', type=int, default=7)

@@ -30,6 +30,7 @@ def process_dynamic_fc(timeseries, window_size, window_stride, dynamic_length=No
         
     dynamic_fc_list = torch.stack(dynamic_fc_list, dim=1)
     dynamic_fc_list[torch.isnan(dynamic_fc_list)] = 0.0
+    
     return dynamic_fc_list, sampling_points
 
 
