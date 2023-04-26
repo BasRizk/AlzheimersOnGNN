@@ -1,19 +1,18 @@
 # Particular folders/files to exclude
 data/clinical_data_merged
 data/processed
-data/roi/cc200
 data/roi/aal_SPM12
+data/roi/schaefer_2018
 data/SUBSET_OF_DATA
 data/*.pth
 data/*.nii.gz
-
 *_participants.tsv
 *.pklz
 *.pth
 
 imagin/results
 imagin/nilearn_cache
-data
+
 tmp
 thirdparty
 
