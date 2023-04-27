@@ -5,7 +5,7 @@ data:
   dir_to_tsv: /scratch1/brizk/ADNI_SCREENING_DATA/splits
   batch_size: 4
   val_batch_size: 2
-  workers: 1
+  workers: 4
   percentage_usage: 1.0
 exp_name: 1007_pooling_age
 visdom:
@@ -28,7 +28,7 @@ mmse_model:
   nhid: 64
 training_parameters:
   use_age: False
-  pretrain:  #dir to saved model here
+  pretrain: /scratch1/brizk/ADNI_SCREENING_DATA/cnn_results/model/1007_pooling_age_train_perc_100.0_expansion_0
   max_iter: 16000
   start_epoch: 0
   epochs: 200

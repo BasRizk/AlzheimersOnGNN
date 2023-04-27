@@ -6,6 +6,7 @@ import argparse
 def parse():
     parser = argparse.ArgumentParser(description='SPATIO-TEMPORAL-ATTENTION-GRAPH-ISOMORPHISM-NETWORK')
 
+    parser.add_argument('--use_cached', action='store_true', help='for some debugging behavior')
     parser.add_argument('--clean_ckpt', action='store_true')
     parser.add_argument('--clean_cache', action='store_true')
     parser.add_argument('--no_kfold', action='store_true')

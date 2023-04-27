@@ -1,7 +1,6 @@
 import util
 import shutil
 
-from experiment import train, test
 # from analysis import analyze
 import os
 
@@ -9,9 +8,13 @@ if __name__=='__main__':
     # parse options and make directories
     argv = util.option.parse()
     
+    prefix = ""
+    if argv.use_cached:
+        prefix = "cached_______"
+
     argv.targetdir = os.path.join(
         argv.targetdir,
-        f'ws({argv.window_size})'
+        f'{prefix}ws({argv.window_size})'
         f'_st({argv.window_stride})'
         f'_lr({argv.lr})mx({argv.max_lr})'
         f'_reg({argv.reg_lambda})',
@@ -22,6 +25,7 @@ if __name__=='__main__':
         f'_sprs({"_".join(map(str, argv.sparsities))})'
         f'_d({argv.dropout})'
     )
+    
     
 
     if argv.clean_ckpt:
@@ -44,12 +48,14 @@ if __name__=='__main__':
                 )
                 print(f'Cleaned Cache: {file}')
 
-
-    
     if argv.no_kfold:
-        from experiment_new import train
-        train(argv)
+        from experiment_new import train, test
+        if not argv.no_train:
+            train(argv)
+        else: # TODO maybe include it always anyways
+            test(argv)
     else:
+        from experiment import train, test
         # run and analyze experiment
         if not argv.no_train: train(argv)
         if not argv.no_test: test(argv)

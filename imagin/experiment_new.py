@@ -117,7 +117,13 @@ def train(argv):
         pct_start=0.2, div_factor=argv.max_lr/argv.lr, final_div_factor=1000
     )
     if checkpoint['optimizer'] is not None: optimizer.load_state_dict(checkpoint['optimizer'])
-    if checkpoint['scheduler'] is not None: scheduler.load_state_dict(checkpoint['scheduler'])
+    if checkpoint['scheduler'] is not None:
+        sch_dict = checkpoint['scheduler']
+        sch_dict['total_steps'] =\
+            sch_dict['total_steps'] +\
+            argv.num_epochs * int(len(dataloader_train))
+        scheduler.load_state_dict(sch_dict)
+        # scheduler.load_state_dict(checkpoint['scheduler'])
 
     # define logging objects
     summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'train'), )
@@ -225,32 +231,72 @@ def train(argv):
 
     model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
 
-    # TODO   
-    # logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
-    # summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
-    # inference( # TEST
-    #     dataset=dataset,
-    #     dataloader=dataloader_test,
-    #     k=k,
-    #     model=model,
-    #     criterion=criterion,
-    #     device=device,
-    #     argv=argv,
-    #     logger=logger_test,
-    #     summary_writer=summary_writer_test,
-    #     str_pre_metrics="FINAL VAL",
-    #     test_logging=True,
-    #     set_fold=False
-    # )
-
-    # finalize experiment
-    # logger_test.to_csv(argv.targetdir)
-    # final_metrics = logger_test.evaluate()
-    # print(final_metrics)
-
-    # torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))
 
     summary_writer.close()
     summary_writer_val.close()
     # summary_writer_test.close()
     # os.remove(os.path.join(argv.targetdir, 'checkpoint.pth'))
+
+
+def test(argv):
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    dataset_test = ADNI(
+        argv.data_dir,
+        argv.data_type,
+        argv.atlas_dir,
+        argv.splits_dir,
+        mode="Test",
+        # dynamic_length=argv.dynamic_length, 
+        k_fold=None,
+        # smoothing_fwhm=argv.fwhm,
+        num_classes=argv.num_classes,
+        depth_of_slice=argv.depth_of_slice,
+        slicing_stride=argv.slicing_stride,
+        device=device,
+        parallize_brains=argv.parallize_brains
+    )
+
+    dataloader_test = torch.utils.data.DataLoader(
+        dataset_test, batch_size=1, shuffle=False, 
+    )
+
+    # define model
+    model = ModelIMAGIN(
+        input_dims=dataset_test.nums_nodes,
+        hidden_dims=argv.hidden_dims,
+        num_classes=dataset_test.num_classes,
+        num_layers=argv.num_layers,
+        sparsities=argv.sparsities,
+    )
+
+    model.to(device)
+
+    criterion = torch.nn.CrossEntropyLoss() if dataset_train.num_classes > 1 else torch.nn.MSELoss()
+
+       
+    k=0 # TODO kept only to reduce modifications
+    logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset_test.num_classes)
+    summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
+    inference( # TEST
+        dataset=dataset_test,
+        dataloader=dataloader_test,
+        k=k,
+        model=model,
+        criterion=criterion,
+        device=device,
+        argv=argv,
+        logger=logger_test,
+        summary_writer=summary_writer_test,
+        str_pre_metrics="FINAL VAL",
+        test_logging=True,
+        set_fold=False
+    )
+
+    # finalize experiment
+    logger_test.to_csv(argv.targetdir)
+    final_metrics = logger_test.evaluate()
+    print(final_metrics)
+
+    torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))

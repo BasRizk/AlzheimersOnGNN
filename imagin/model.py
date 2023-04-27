@@ -189,7 +189,7 @@ class ModelIMAGIN(nn.Module):
         self.cc200 = ModelESTAGIN(input_dim=input_dims[1], hidden_dim=hidden_dims[1], num_classes=num_classes, num_heads=1, num_layers=num_layers[1], sparsity=sparsities[1], dropout=dropout, cls_token=cls_token, readout=readout)
         self.schaefer = ModelESTAGIN(input_dim=input_dims[2], hidden_dim=hidden_dims[2], num_classes=num_classes, num_heads=1, num_layers=num_layers[2], sparsity=sparsities[2], dropout=dropout, cls_token=cls_token, readout=readout)
         self.linear = nn.Linear(hidden_dims[0]+hidden_dims[1]+hidden_dims[2], num_classes)
-        # self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, v, a, t, sampling_endpoints, debug=False):
         # TODO discuss how come t used to be only one t instead of 3 (per atlas)
@@ -200,8 +200,8 @@ class ModelIMAGIN(nn.Module):
         latent_schaefer, attention_schaefer, reg_ortho_schaefer =\
             self.schaefer(v[2], a[2], t[2], sampling_endpoints[2])
 
-        # logit = self.dropout(self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2)))
-        logit = self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2))
+        logit = self.dropout(self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2)))
+        # logit = self.linear(torch.cat([latent_aal, latent_cc200, latent_schaefer], dim=2))
         
         reg_ortho = reg_ortho_aal + reg_ortho_cc200 + reg_ortho_schaefer
 

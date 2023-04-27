@@ -67,10 +67,12 @@ class LoggerIMAGIN(object):
         return dict(true=true, pred=pred, prob=prob)
 
 
-    def evaluate(self, k=None, initialize=False, option='mean'):
+    # multi_avg = 'micro'/'weighted'
+    def evaluate(self, k=None, initialize=False, option='mean', multi_avg='weighted'):
         samples = self.get(k)
 
         if not self.k_fold is None and k is None:
+            breakpoint()
             if option=='mean': aggregate = np.mean
             elif option=='std': aggregate = np.std
             else: raise 
@@ -81,14 +83,14 @@ class LoggerIMAGIN(object):
             precision = aggregate([
                 metrics.precision_score(
                     samples['true'][k], samples['pred'][k],
-                    average='binary' if self.num_classes==2 else 'micro'
+                    average='binary' if self.num_classes==2 else multi_avg
                 )
                 for k in range(self.k_fold)
             ])
             recall = aggregate([
                 metrics.recall_score(
                     samples['true'][k], samples['pred'][k],
-                    average='binary' if self.num_classes==2 else 'micro'
+                    average='binary' if self.num_classes==2 else multi_avg
                 )
                 for k in range(self.k_fold)
             ])
@@ -108,23 +110,27 @@ class LoggerIMAGIN(object):
             accuracy = metrics.accuracy_score(samples['true'], samples['pred'])
             precision = metrics.precision_score(
                 samples['true'], samples['pred'], 
-                average='binary' if self.num_classes==2 else 'micro'
+                average='binary' if self.num_classes==2 else multi_avg
             )
             recall = metrics.recall_score(
                 samples['true'], samples['pred'], 
-                average='binary' if self.num_classes==2 else 'micro'
+                average='binary' if self.num_classes==2 else multi_avg
             )
 
             if self.num_classes==2:
                 roc_auc = metrics.roc_auc_score(samples['true'], samples['prob'][:,1]) 
             else:
                 roc_auc = metrics.roc_auc_score(
-                    samples['true'], samples['prob'], average='macro',
+                    samples['true'], samples['prob'], average=multi_avg,
                     multi_class='ovr'
                 )
 
         if initialize:
             self.initialize(k)
+
+        cf = metrics.multilabel_confusion_matrix(samples['true'], samples['pred'])
+        print('Confusion Matrix:\n', cf)
+
 
         return dict(accuracy=accuracy, precision=precision, recall=recall, roc_auc=roc_auc)
 
