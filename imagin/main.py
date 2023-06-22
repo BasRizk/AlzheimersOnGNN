@@ -12,13 +12,15 @@ if __name__=='__main__':
     if argv.use_cached:
         prefix = "cached_______"
 
+    label_smoothing_suffix = f'ls({argv.label_smoothing})' if argv.label_smoothing > 0 else ''
+
     argv.targetdir = os.path.join(
         argv.targetdir,
         f'{prefix}ws({argv.window_size})'
         f'_st({argv.window_stride})'
         f'_lr({argv.lr})mx({argv.max_lr})'
-        f'_reg({argv.reg_lambda})',
-        
+        f'_reg({argv.reg_lambda})'
+        f'{label_smoothing_suffix}',
         f'b({argv.minibatch_size})'
         f'_cg({argv.clip_grad})'
         f'_hd({"_".join(map(str, argv.hidden_dims))})'
@@ -29,6 +31,7 @@ if __name__=='__main__':
     
 
     if argv.clean_ckpt:
+        print('No K-Fold')
         if os.path.exists(argv.targetdir):
             shutil.rmtree(argv.targetdir)
             print('Cleaned CKPT')
@@ -51,8 +54,10 @@ if __name__=='__main__':
     if argv.no_kfold:
         from experiment_new import train, test
         if not argv.no_train:
+            print('Training..')
             train(argv)
-        else: # TODO maybe include it always anyways
+        if not argv.no_test:
+            print('Testing..')
             test(argv)
     else:
         from experiment import train, test

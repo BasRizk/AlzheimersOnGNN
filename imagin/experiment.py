@@ -143,7 +143,7 @@ def inference(
         test_logging=True, # FOR FILE LOGGING
         set_fold=True
     ):
-
+    
     if test_logging:
         # define logging objects
         fold_attentions = {
@@ -195,6 +195,7 @@ def inference(
                 true=label.detach().cpu().numpy(), 
                 prob=prob.detach().cpu().numpy()
             )
+
             loss_accumulate += loss.detach().cpu().numpy()
             reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
 
@@ -225,7 +226,8 @@ def inference(
             fold_attentions=fold_attentions, 
             latent_accumulates=latent_accumulates
         )
-        del fold_attentions
+        # breakpoint()
+        # del fold_attentions
 
     return metrics
             
@@ -309,7 +311,7 @@ def train(argv):
 
         model.to(device)
         if checkpoint['model'] is not None: model.load_state_dict(checkpoint['model'])
-        criterion = torch.nn.CrossEntropyLoss() if dataset.num_classes > 1 else torch.nn.MSELoss()
+        criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_test.num_classes > 1 else torch.nn.MSELoss()
 
 
         # define optimizer and learning rate scheduler
@@ -494,7 +496,7 @@ def test(argv):
         model.to(device)
 
         model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
-        criterion = torch.nn.CrossEntropyLoss() if dataset.num_classes > 1 else torch.nn.MSELoss()
+        criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_train.num_classes > 1 else torch.nn.MSELoss()
         summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
 
         inference(

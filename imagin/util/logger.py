@@ -72,7 +72,6 @@ class LoggerIMAGIN(object):
         samples = self.get(k)
 
         if not self.k_fold is None and k is None:
-            breakpoint()
             if option=='mean': aggregate = np.mean
             elif option=='std': aggregate = np.std
             else: raise 
@@ -121,16 +120,15 @@ class LoggerIMAGIN(object):
                 roc_auc = metrics.roc_auc_score(samples['true'], samples['prob'][:,1]) 
             else:
                 roc_auc = metrics.roc_auc_score(
-                    samples['true'], samples['prob'], average=multi_avg,
+                    samples['true'], samples['prob'], average='macro',
                     multi_class='ovr'
                 )
 
+            cf = metrics.multilabel_confusion_matrix(samples['true'], samples['pred'])
+            print('Confusion Matrix:\n', cf)
+
         if initialize:
             self.initialize(k)
-
-        cf = metrics.multilabel_confusion_matrix(samples['true'], samples['pred'])
-        print('Confusion Matrix:\n', cf)
-
 
         return dict(accuracy=accuracy, precision=precision, recall=recall, roc_auc=roc_auc)
 

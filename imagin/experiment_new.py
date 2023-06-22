@@ -71,6 +71,26 @@ def train(argv):
         # pin_memory=True
     )
     
+    dataset_test = ADNI(
+        argv.data_dir,
+        argv.data_type,
+        argv.atlas_dir,
+        argv.splits_dir,
+        mode="Test",
+        # dynamic_length=argv.dynamic_length, 
+        k_fold=None,
+        # smoothing_fwhm=argv.fwhm,
+        num_classes=argv.num_classes,
+        depth_of_slice=argv.depth_of_slice,
+        slicing_stride=argv.slicing_stride,
+        device=device,
+        parallize_brains=argv.parallize_brains
+    )
+
+    dataloader_test = torch.utils.data.DataLoader(
+        dataset_test, batch_size=1, shuffle=False, 
+    )
+
 
     # Start Experiment
     k=0 # TODO kept only to reduce modifications
@@ -105,7 +125,7 @@ def train(argv):
 
     model.to(device)
     if checkpoint['model'] is not None: model.load_state_dict(checkpoint['model'])
-    criterion = torch.nn.CrossEntropyLoss() if dataset_train.num_classes > 1 else torch.nn.MSELoss()
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_train.num_classes > 1 else torch.nn.MSELoss()
 
 
     # define optimizer and learning rate scheduler
@@ -140,7 +160,6 @@ def train(argv):
         reg_ortho_accumulate = 0.0
         for i, x in enumerate(tqdm(dataloader_train, ncols=60, desc=f'k:{k} e:{epoch}')):
             # process input data
-            # breakpoint()
             all_dyn_a, all_sampling_endpoints, all_dyn_v, all_t, label =\
                 process_input_data(
                     x,
@@ -220,7 +239,7 @@ def train(argv):
             best_auroc = metrics['roc_auc']
             best_model = model.state_dict()
             torch.save(best_model, os.path.join(argv.targetdir, 'model', str(k), 'model.pth'))
-            print("BEST MODEL")
+            print(f"BEST MODEL @ epoch {epoch}")
 
 
     checkpoint.update({'epoch': 0, 'model': None, 'optimizer': None, 'scheduler': None})
@@ -228,9 +247,6 @@ def train(argv):
     # final validation results
     for atlas_name in dataset_val.atlases_names:
         os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(k)), exist_ok=True)
-
-    model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
-
 
     summary_writer.close()
     summary_writer_val.close()
@@ -271,9 +287,13 @@ def test(argv):
         sparsities=argv.sparsities,
     )
 
+    k = 0 # TODO remove as not used
+    model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
+    
     model.to(device)
 
-    criterion = torch.nn.CrossEntropyLoss() if dataset_train.num_classes > 1 else torch.nn.MSELoss()
+    
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_test.num_classes > 1 else torch.nn.MSELoss()
 
        
     k=0 # TODO kept only to reduce modifications
@@ -289,7 +309,7 @@ def test(argv):
         argv=argv,
         logger=logger_test,
         summary_writer=summary_writer_test,
-        str_pre_metrics="FINAL VAL",
+        str_pre_metrics="Test set",
         test_logging=True,
         set_fold=False
     )

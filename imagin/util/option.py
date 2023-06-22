@@ -5,6 +5,8 @@ import argparse
 
 def parse():
     parser = argparse.ArgumentParser(description='SPATIO-TEMPORAL-ATTENTION-GRAPH-ISOMORPHISM-NETWORK')
+    
+    parser.add_argument('--label_smoothing', type=float, default=0.0)
 
     parser.add_argument('--use_cached', action='store_true', help='for some debugging behavior')
     parser.add_argument('--clean_ckpt', action='store_true')
