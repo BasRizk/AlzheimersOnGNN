@@ -27,7 +27,7 @@ export PATH=${MATLAB_HOME}:${PATH}
 export MATLABCMD=${MATLAB_HOME}/matlab
 
 # SPM
-export SPM_HOME=/project/ajitesh_1045/thirdparty/spm12
+export SPM_HOME=/scratch1/$USER/alz/thirdparty/spm12
 export MATLABPATH=$SPM_HOME:$MATLABPATH
 
 # Only with windows

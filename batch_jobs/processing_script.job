@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=0
+#SBATCH --time=48:00:00
+#SBATCH --account=ajiteshs_1045
+#SBATCH --partition=epyc-64
+
+SCRIPTS_DIR=batch_jobs
+ENV_NAME=alz
+
+source $PWD/$SCRIPTS_DIR/load_env_on_carc.sh &&\
+conda activate $ENV_NAME &&\
+echo "done init and activating env: $ENV_NAME"
+
+success=0
+echo "Calling processing script: $1"
+sh $@ && echo "done processing script: $1" && success=1
+
+if [ $success -eq 1 ]; then
+    echo "Completely processed script: $1"
+else
+    echo "Failed processing script: $1"
+fi
+
+# Usage examples:
+# sbatch batch_jobs/processing_script.job preprocessing/convert_adni_to_bids_clinica.sh
+# sbatch batch_jobs/processing_script.job preprocessing/preprocess_t1volume_adni_clinica.sh

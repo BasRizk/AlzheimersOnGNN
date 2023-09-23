@@ -13,7 +13,6 @@ ALL_TSV_FILES=${@:5}
 # convert ALL_TSV_FILES to an array
 ALL_TSV_FILES=($ALL_TSV_FILES)
 
-
 echo "SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID"
 TSV_FILE=${ALL_TSV_FILES[$SLURM_ARRAY_TASK_ID]}
 
@@ -26,13 +25,14 @@ echo "TSV_FILE: $TSV_FILE"
 
 NUM_OF_SAMPLES=$(wc -l < $TSV_FILE)
 TMP_WORK_DIR=$PREFIX_DATA_DIR/ADNI_SPLITS/split/WD_${GROUP_LABEL}_${SLURM_ARRAY_TASK_ID}
-OPTIONS="--n_procs 1 -tsv $TSV_FILE -wd $TMP_WORK_DIR -y"
+OPTIONS="--n_procs 1 -tsv $TSV_FILE -wd $TMP_WORK_DIR"
 
 echo Running t1-volume pipeline on $TSV_FILE: $subject
 echo "Running t1-volume pipeline on ${GROUP_LABEL} group"
 echo "Number of samples in $TSV_FILE: $NUM_OF_SAMPLES"
 echo "Temporary working directory: $TMP_WORK_DIR"
 echo "Options: $OPTIONS"
+
 
 # extract TSV_FILE directory
 TSV_DIR=$(dirname $TSV_FILE)
@@ -46,5 +46,14 @@ mkdir -p $TSV_DIR/logs
 mkdir -p $TSV_DIR/logs/$TSV_BASENAME_NO_EXT
 cd $TSV_DIR/logs/$TSV_BASENAME_NO_EXT
 
-clinica run t1-volume $OPTIONS $BIDS_DIR $CAPS_DIR $GROUP_LABEL
+# make directory for logs of this TSV_FILE
+mkdir -p $TSV_DIR/logs
+mkdir -p $TSV_DIR/logs/$TSV_BASENAME_NO_EXT
+cd $TSV_DIR/logs/$TSV_BASENAME_NO_EXT
+
+# Note train here is used because it is the name of the existing template
+clinica run t1-volume-existing-template $OPTIONS $BIDS_DIR $CAPS_DIR "train"
+
 echo "Finished running t1-volume pipeline on ${GROUP_LABEL} group from $TSV_FILE"
+
+
