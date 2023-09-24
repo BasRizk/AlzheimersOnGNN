@@ -17,7 +17,6 @@ def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, 
 
     # run model
     logit, attention, latent, reg_ortho = model(all_dyn_v, all_dyn_a, all_t, all_sampling_endpoints)
-
     loss = criterion(logit, label)
     reg_ortho *= reg_lambda
     loss += reg_ortho
@@ -30,8 +29,6 @@ def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, 
        optimizer.step()
        if scheduler is not None:
            scheduler.step()
-    # else:
-    #     breakpoint()
 
     return logit, loss, attention, latent, reg_ortho
 
@@ -161,6 +158,7 @@ def inference(
     loss_accumulate = 0.0
     reg_ortho_accumulate = 0.0
     
+    model.eval()
     for i, x in enumerate(tqdm(dataloader, ncols=60, desc=f'k:{k}')):
         with torch.no_grad():
             # process input data
@@ -311,7 +309,7 @@ def train(argv):
 
         model.to(device)
         if checkpoint['model'] is not None: model.load_state_dict(checkpoint['model'])
-        criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_test.num_classes > 1 else torch.nn.MSELoss()
+        criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset.num_classes > 1 else torch.nn.MSELoss()
 
 
         # define optimizer and learning rate scheduler

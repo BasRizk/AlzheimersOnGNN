@@ -16,8 +16,9 @@ from nilearn.image import load_img, smooth_img, clean_img
 from nilearn.maskers import NiftiLabelsMasker
 from nilearn.datasets import fetch_atlas_schaefer_2018, fetch_atlas_aal, fetch_atlas_destrieux_2009, fetch_atlas_harvard_oxford
 from sklearn.model_selection import StratifiedKFold
-from multiprocessing.pool import ThreadPool
+from multiprocessing.pool import ThreadPool # TODO change to Parallel
 
+from loguru import logger
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -31,10 +32,9 @@ class ADNI(Dataset):
         mode='Train',
         num_classes=3,
         depth_of_slice=40,
-        k_fold=None,
+        k_fold=1,
     #  smoothing_fwhm=None,
         slicing_stride=5,
-        device=None,
         parallize_brains=True
     ):
         if data_type == "t1_volume":
@@ -48,15 +48,13 @@ class ADNI(Dataset):
 
         self.parallized_brains = parallize_brains
         self.n_processes = os.cpu_count() - 1
-        print(f'ADNI Dataset Processing using {self.n_processes} processes')
+        logger.debug(f'ADNI ({mode}) {data_type} prepared dataset to preprocess using {self.n_processes} processes')
         if self.parallized_brains:
-            print('..Parellizing over brains processing')
+            logger.debug('..Parellizing over brains processing')
         else:
-            print('..Parallizing over slices processing')
+            logger.debug('..Parallizing over slices processing')
         self.threading_pool = ThreadPool(self.n_processes)
         
-        self.device = device
-
         self.num_classes = num_classes
         if self.num_classes == 3:
             LABEL_MAPPING = ["CN", "MCI", "AD"]
@@ -80,14 +78,8 @@ class ADNI(Dataset):
                     indices_not_missing.append(i)
 
         self.subject_tsv = subject_tsv.iloc[indices_not_missing]
-        
-        # if mode == 'Train':
-        #     self.subject_tsv = subject_tsv.iloc[np.random.permutation(int(len(subject_tsv)))]
-        # self.subject_id = np.unique(subject_tsv.participant_id.values)
-        # self.index_dic = dict(zip(self.subject_id,range(len(self.subject_id))))
         self.dir_to_scans = os.path.join(data_dir, 'processed', 'subjects')
         self.mode = mode
-        # self.age_range = list(np.arange(0.0,120.0,0.5))
         self.slicing_stride = slicing_stride
         self.depth_of_slice = depth_of_slice
         self.experiment_name = f'prepared_adni_{self.mode}_{self.num_classes}classes_{self.depth_of_slice}ds'
@@ -95,10 +87,10 @@ class ADNI(Dataset):
 
         if os.path.isfile(os.path.join(data_dir, f'{self.experiment_name}.pth')):
             self.slices_stack_dict = load(os.path.join(data_dir, f'{self.experiment_name}.pth'))
-            print('Loading Saved slices..')
+            logger.success(f'Loaded saved slices.')
 
         else:
-            print('Preparing data and generating slices..')
+            logger.info('Preparing data and generating slices..')
             self.slices_stack_dict = {}
             def get_slices(item):
                 idx, row = item
@@ -114,36 +106,44 @@ class ADNI(Dataset):
                         subject_tsv.iterrows(),
                         chunksize=self.n_processes
                     ),
-                    ncols=60, total=subject_tsv.shape[0]
+                    ncols=60, total=subject_tsv.shape[0],
+                    desc="Preparing subject brains in parallel"
                 ):
                     self.slices_stack_dict[idx] = slices
-
             else:
-                for idx, row in tqdm(subject_tsv.iterrows(), ncols=60, total=subject_tsv.shape[0]): 
+                for idx, row in tqdm(
+                    subject_tsv.iterrows(), ncols=60, total=subject_tsv.shape[0],
+                    desc="Preparing subject brains sequentially"
+                ): 
                     _, self.slices_stack_dict[idx] = get_slices((idx, row))
 
             save(self.slices_stack_dict, os.path.join(data_dir, f'{self.experiment_name}.pth'))
+            
+            logger.success('Saved succesfully generated prepared slices.')
             
         _somekey = list(self.slices_stack_dict.keys())[0]
         self.nums_nodes = []
         for i in range(len(self.roi_maskers)):
             self.nums_nodes.append(self.slices_stack_dict[_somekey][i].shape[1])
-        
+
+        logger.success(f'Retrived # of nodes: {self.nums_nodes}')
+
         self.full_sample_id_list = list(self.slices_stack_dict.keys())
 
-        self.k_fold = k_fold
-        if k_fold is None:
+        if k_fold <= 1:
+            self.k_fold = 1
             self.sample_id_list = self.full_sample_id_list
-        if k_fold is not None:
+            logger.success(f'No fold / 1-fold applied hence sample_id_list=full_sample_id_list')
+        else:
             self.k_fold = StratifiedKFold(k_fold, shuffle=True, random_state=0)
             self.k = None
-        
-        # breakpoint()
+            logger.success(f'Using stratified shuffled KFold of {k_fold}')
+
         self.threading_pool.close()
-        # self.num_classes = len(behavioral_df.unique())
         
     def set_fold(self, fold, train=True):
-        assert self.k_fold is not None
+        # TODO merge with logic from above to encapsulate logic
+        assert self.k_fold is not None and self.k_fold > 1
         self.k = fold
         
         labels = self.subject_tsv.iloc[self.full_sample_id_list]['diagnosis'].to_list()
@@ -205,15 +205,16 @@ class ADNI(Dataset):
             else:
                 label = 2
         else:
-            print('WRONG LABEL VALUE!!!')
+            logger.error('WRONG LABEL VALUE!!!')
             label = -100
         
         slices = self.slices_stack_dict[sample_id]
         
+        # TODO ensure it works
         return {
             "id": sample_id,
-            "slices_per_atlas": [s.to(self.device) for s in slices],
-            "label": torch.tensor(label).to(self.device)
+            "slices_per_atlas": slices,
+            "label": label
         }
         # return image.astype(np.float32),label,idx_out,mmse,cdr_sub,age, os.path.join(path,seg_name)
 
@@ -234,17 +235,10 @@ class ADNI(Dataset):
             slices = self.prepare_brain(
                 load_img(os.path.join(path, img_filename))
             )
-            # breakpoint()
-            
-
-            # mmse = self.subject_tsv.iloc[idx].mmse
-            # cdr_sub = 0#self.subject_tsv.iloc[idx].cdr #cdr_sb #cdr#
-            # age = list(np.arange(0.0,120.0,0.5)).index(self.subject_tsv.iloc[idx].age_rounded) #list(np.arange(0.0,25.0)).index(self.subject_tsv.iloc[idx].education_level)#
-            # idx_out = self.index_dic[self.subject_tsv.iloc[idx].participant_id]
 
         except Exception as e:
-            print(f"Failed to load #{sample_id}: {path}")
-            print(f"Errors encountered: {e}")
+            logger.error(f"Failed to load #{sample_id}: {path}")
+            logger.error(f"Errors encountered: {e}")
             print(traceback.format_exc())
             return None
 
@@ -287,12 +281,12 @@ class ADNI(Dataset):
 
         if self.parallized_brains:
             mapping_func = map
-            # print(f'processing {len(slices)} slices sequentially')
+            # logger.info(f'processing {len(slices)} slices sequentially')
         else:
             mapping_func = lambda func, itr: self.threading_pool.map(
                 func, itr, chunksize=self.n_processes
             )
-            # print(f'processing {len(slices)} slices in parallel')
+            # logger.info(f'processing {len(slices)} slices in parallel')
             
         for ss in mapping_func(preprocess_slice, slices):
             for r_i, s in enumerate(ss):
