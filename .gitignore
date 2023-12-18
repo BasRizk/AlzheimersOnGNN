@@ -9,6 +9,7 @@ data/*.nii.gz
 *_participants.tsv
 *.pklz
 *.pth
+*.out
 
 imagin/results
 imagin/nilearn_cache

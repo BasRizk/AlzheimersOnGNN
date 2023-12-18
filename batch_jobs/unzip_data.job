@@ -1,0 +1,39 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=64GB
+#SBATCH --time=24:00:00
+#SBATCH --account=ajiteshs_1045
+#SBATCH --partition=main
+
+SCRIPTS_DIR=batch_jobs
+ENV_NAME=alz
+
+module load gcc/12.3.0 p7zip/17.05 
+
+DATASET_PREFIX=/project/ajiteshs_1045/alzheimers/current_dataset
+OUTPUT_PREFIX=/scratch1/brizk/alz
+
+folder_name=ALL_ADNI_MRI_T1
+# OUTPUT_PATH=$OUTPUT_PREFIX/$folder_name
+OUTPUT_PATH=$DATASET_PREFIX/ALL_ADNI_POSTPRE_MRI_T1
+mkdir -p $OUTPUT_PATH
+echo "Unzipping $folder_name"
+7z x -y  $DATASET_PREFIX/$folder_name/\*.zip -o$OUTPUT_PATH
+echo "Done unzipping data"
+
+#folder_name=ADNI3_MRI
+#OUTPUT_PATH=$OUTPUT_PREFIX/$folder_name
+#mkdir -p $OUTPUT_PATH
+#echo "Unzipping $folder_name"
+#7z x -y $DATASET_PREFIX/$folder_name/\*.zip -o$OUTPUT_PATH
+#echo "Done unzipping data"
+
+# folder_name=ALL_ADNI_POSTPRE_MRI_T1
+# OUTPUT_PATH=$OUTPUT_PREFIX/$folder_name
+# mkdir -p $OUTPUT_PREFIX
+# echo "Unzipping $folder_name"
+# 7z x -y $DATASET_PREFIX/$folder_name/\*.zip -o$OUTPUT_PATH
+# echo "Done unzipping data"

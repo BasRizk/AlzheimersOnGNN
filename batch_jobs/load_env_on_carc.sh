@@ -22,6 +22,8 @@ module load git vim
 # MATLAB
 module load matlab/2022a
 
+# load htop
+module load gcc htop
 
 if $(conda env list | grep -q $ENV_NAME); then
     echo "It's there."

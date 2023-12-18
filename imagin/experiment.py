@@ -10,6 +10,7 @@ from einops import repeat
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 
+from loguru import logger as console_logger
 
 def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, label, reg_lambda, clip_grad=0.0, device='cpu', optimizer=None, scheduler=None):
     if optimizer is None: model.eval()
@@ -25,11 +26,11 @@ def step(model, criterion, all_dyn_v, all_dyn_a, all_sampling_endpoints, all_t, 
     if optimizer is not None:
        optimizer.zero_grad()
        loss.backward()
-       if clip_grad > 0.0: torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad)
+       if clip_grad > 0.0: torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), clip_grad)
        optimizer.step()
        if scheduler is not None:
            scheduler.step()
-
+                
     return logit, loss, attention, latent, reg_ortho
 
 
@@ -213,13 +214,14 @@ def inference(
         loss_accumulate, dataloader, reg_ortho_accumulate,
         None, attentions
     )
-    print(str_pre_metrics, metrics, f'loss = {loss_accumulate}')
+    
+    console_logger.success(f'{str_pre_metrics}\n{metrics}\n loss = {loss_accumulate}')
 
     if test_logging:
         # finalize fold
         log_fold(
             logger=logger,
-            target_dir=argv.targetdir, 
+            target_dir=argv.target_dir, 
             k=k, 
             fold_attentions=fold_attentions, 
             latent_accumulates=latent_accumulates
@@ -227,14 +229,14 @@ def inference(
         # breakpoint()
         # del fold_attentions
 
-    return metrics
+    return metrics, loss_accumulate
             
 
 
 def train(argv):
     # make directories
-    os.makedirs(os.path.join(argv.targetdir, 'model'), exist_ok=True)
-    os.makedirs(os.path.join(argv.targetdir, 'summary'), exist_ok=True)
+    os.makedirs(os.path.join(argv.target_dir, 'model'), exist_ok=True)
+    os.makedirs(os.path.join(argv.target_dir, 'summary'), exist_ok=True)
 
     # set seed and device
     torch.manual_seed(argv.seed)
@@ -245,22 +247,19 @@ def train(argv):
         torch.cuda.manual_seed_all(argv.seed)
     else:
         device = torch.device("cpu")
-        
+    
+    # TODO rewrite this
     # define dataset
     dataset = ADNI(
-        argv.data_dir,
-        argv.data_type,
-        argv.atlas_dir,
-        argv.splits_dir,
-        mode="Train",
-        # dynamic_length=argv.dynamic_length, 
+        argv.caps_dir,
+        argv.caps_type,
+        argv.atlases_dir,
+        argv.test_split_filepath,
+        argv.num_classes,
+        argv.depth_of_slice,
+        argv.slicing_stride,
+        preserve_img_shape_in_slices=argv.preserve_img_shape_in_slices,
         k_fold=argv.k_fold,
-        # smoothing_fwhm=argv.fwhm,
-        num_classes=argv.num_classes,
-        depth_of_slice=argv.depth_of_slice,
-        slicing_stride=argv.slicing_stride,
-        device=device,
-        parallize_brains=argv.parallize_brains
     )
 
     n_workers=0 #4
@@ -278,9 +277,9 @@ def train(argv):
     logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
     # resume checkpoint if file exists
-    if os.path.isfile(os.path.join(argv.targetdir, 'checkpoint.pth')):
-        print('resuming checkpoint experiment')
-        checkpoint = torch.load(os.path.join(argv.targetdir, 'checkpoint.pth'), map_location=device)
+    if os.path.isfile(os.path.join(argv.target_dir, 'checkpoint.pth')):
+        console_logger.warning('Resuming checkpoint experiment')
+        checkpoint = torch.load(os.path.join(argv.target_dir, 'checkpoint.pth'), map_location=device)
     else:
         checkpoint = {
             'fold': 0,
@@ -293,7 +292,7 @@ def train(argv):
     # start experiment
     for k in range(checkpoint['fold'], argv.k_fold):
         # make directories per fold
-        os.makedirs(os.path.join(argv.targetdir, 'model', str(k)), exist_ok=True)
+        os.makedirs(os.path.join(argv.target_dir, 'model', str(k)), exist_ok=True)
 
         # set dataloader
         dataset.set_fold(k, train=True)
@@ -305,6 +304,7 @@ def train(argv):
             num_classes=dataset.num_classes,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
+            dropout=argv.dropout
         )
 
         model.to(device)
@@ -324,8 +324,8 @@ def train(argv):
         if checkpoint['scheduler'] is not None: scheduler.load_state_dict(checkpoint['scheduler'])
 
         # define logging objects
-        summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'train'), )
-        summary_writer_val = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'val'), )
+        summary_writer = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(k), 'train'), )
+        summary_writer_val = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(k), 'val'), )
         logger = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
         logger_val = util.logger.LoggerIMAGIN(argv.k_fold, dataset.num_classes)
 
@@ -369,7 +369,7 @@ def train(argv):
                 prob = logit.softmax(1)
 
                 if np.isnan(prob.detach().cpu().numpy()).any():
-                    print('nan')
+                    console_logger.warning('observed nan at prob!!')
                 loss_accumulate += loss.detach().cpu().numpy()
                 reg_ortho_accumulate += reg_ortho.detach().cpu().numpy()
                 logger.add(k=k, pred=pred.detach().cpu().numpy(), true=label.detach().cpu().numpy(), prob=prob.detach().cpu().numpy())
@@ -381,7 +381,7 @@ def train(argv):
                 loss_accumulate, dataloader, reg_ortho_accumulate,
                 epoch, attentions
             )
-            print("TRAIN:", metrics, f'loss = {loss_accumulate}')
+            console_logger.debug(f'TRAIN:\n{metrics}\n loss = {loss_accumulate}')
 
             # save checkpoint
             torch.save({
@@ -390,7 +390,7 @@ def train(argv):
                 'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()},
-                os.path.join(argv.targetdir, 'checkpoint.pth')
+                os.path.join(argv.target_dir, 'checkpoint.pth')
             )
 
             # check validation results
@@ -412,13 +412,13 @@ def train(argv):
                 best_accuracy = metrics['accuracy']
                 best_auroc = metrics['roc_auc']
                 best_model = model.state_dict()
-                print("BEST MODEL")
+                console_logger.success("Obtained new best model")
 
         # finalize fold
         if best_model is not None:
-            torch.save(best_model, os.path.join(argv.targetdir, 'model', str(k), 'model.pth'))
+            torch.save(best_model, os.path.join(argv.target_dir, 'model', str(k), 'model.pth'))
         else:
-            print('MODEL IS NONE, TO BE LOADED')
+            console_logger.warning('MODEL IS NONE, TO BE LOADED')
             epoch = argv.num_epochs
             # k = argv.k_fold
 
@@ -426,12 +426,12 @@ def train(argv):
 
         # final validation results
         for atlas_name in dataset.atlases_names:
-            os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(k)), exist_ok=True)
+            os.makedirs(os.path.join(argv.target_dir, 'attention', atlas_name, str(k)), exist_ok=True)
 
-        model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
+        model.load_state_dict(torch.load(os.path.join(argv.target_dir, 'model', str(k), 'model.pth')))
         
 
-        summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
+        summary_writer_test = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(k), 'test'))
         inference( # TEST
             dataset=dataset,
             dataloader=dataloader_test,
@@ -447,16 +447,16 @@ def train(argv):
         )
 
     # finalize experiment
-    logger_test.to_csv(argv.targetdir)
+    logger_test.to_csv(argv.target_dir)
     final_metrics = logger_test.evaluate()
-    print(final_metrics, f'loss = {loss_accumulate}')
+    console_logger.success(f'{final_metrics} \n loss = {loss_accumulate}')
 
-    torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))
+    torch.save(logger_test.get(), os.path.join(argv.target_dir, 'samples.pkl'))
 
     summary_writer.close()
     summary_writer_val.close()
     summary_writer_test.close()
-    # os.remove(os.path.join(argv.targetdir, 'checkpoint.pth'))
+    # os.remove(os.path.join(argv.target_dir, 'checkpoint.pth'))
 
 def test(argv):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -467,9 +467,7 @@ def test(argv):
         argv.data_type,
         argv.atlas_dir,
         argv.splits_dir,
-        # dynamic_length=argv.dynamic_length, 
         k_fold=argv.k_fold,
-        # smoothing_fwhm=argv.fwhm,
         num_classes=argv.num_classes,
         depth_of_slice=argv.depth_of_slice,
         slicing_stride=argv.slicing_stride,
@@ -482,7 +480,7 @@ def test(argv):
     for k in range(argv.k_fold):
 
         for atlas_name in dataset.atlases_names:
-            os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(k)), exist_ok=True)
+            os.makedirs(os.path.join(argv.target_dir, 'attention', atlas_name, str(k)), exist_ok=True)
 
         model = ModelIMAGIN(
             input_dims=dataset.nums_nodes,
@@ -490,12 +488,13 @@ def test(argv):
             num_classes=dataset.num_classes,
             num_layers=argv.num_layers,
             sparsities=argv.sparsities,
+            dropout=argv.dropout
         )
         model.to(device)
 
-        model.load_state_dict(torch.load(os.path.join(argv.targetdir, 'model', str(k), 'model.pth')))
+        model.load_state_dict(torch.load(os.path.join(argv.target_dir, 'model', str(k), 'model.pth')))
         criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) if dataset_train.num_classes > 1 else torch.nn.MSELoss()
-        summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(k), 'test'))
+        summary_writer = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(k), 'test'))
 
         inference(
             dataset=dataset,
@@ -512,8 +511,8 @@ def test(argv):
         
         
     # finalize experiment
-    logger.to_csv(argv.targetdir)
+    logger.to_csv(argv.target_dir)
     final_metrics = logger.evaluate()
-    print(final_metrics)
+    console_logger.success(final_metrics)
     summary_writer.close()
-    torch.save(logger.get(), os.path.join(argv.targetdir, 'samples.pkl'))
+    torch.save(logger.get(), os.path.join(argv.target_dir, 'samples.pkl'))

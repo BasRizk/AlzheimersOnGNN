@@ -1,16 +1,17 @@
-file_name: /scratch1/brizk/ADNI_SCREENING_DATA/cnn_results/model/1007_pooling_age
+file_name: !ENV /scratch1/${USER}/alz/ALL_ADNI_MRI_T1/cnn_results/model/exp_batch_16_lr_0.01_weight_decay_0.000
 data:
-  data_type: t1_linear
-  dir_to_scans: /scratch1/brizk/ADNI_SCREENING_DATA/processed/subjects
-  dir_to_tsv: /scratch1/brizk/ADNI_SCREENING_DATA/splits
-  batch_size: 4
+  data_type: t1_volume
+  dir_to_scans: !ENV  /scratch1/${USER}/alz/ALL_ADNI_MRI_T1/ADNI_CAPS/subjects
+  dir_to_tsv: !ENV /scratch1/${USER}/alz/ALL_ADNI_MRI_T1/ADNI_SPLITS
+  batch_size: 16
   val_batch_size: 2
   workers: 4
   percentage_usage: 1.0
-exp_name: 1007_pooling_age
+exp_name: exp_batch_16_lr_0.01_weight_decay_0.000
+
 visdom:
   port: 
-  server: 
+  server:
 model:
   arch: ours
   input_channel: 1
@@ -28,7 +29,7 @@ mmse_model:
   nhid: 64
 training_parameters:
   use_age: False
-  pretrain: /scratch1/brizk/ADNI_SCREENING_DATA/cnn_results/model/1007_pooling_age_train_perc_100.0_expansion_0
+  pretrain: !ENV /scratch1/${USER}/alz/ALL_ADNI_MRI_T1/cnn_results/model/exp_batch_16_lr_0.01_weight_decay_0.000
   max_iter: 16000
   start_epoch: 0
   epochs: 200

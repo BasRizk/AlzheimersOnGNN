@@ -67,11 +67,11 @@ class LoggerIMAGIN(object):
         return dict(true=true, pred=pred, prob=prob)
 
 
-    # multi_avg = 'micro'/'weighted'
-    def evaluate(self, k=None, initialize=False, option='mean', multi_avg='weighted'):
+    # multi_avg= weighted/macro/micro
+    def evaluate(self, k=None, initialize=False, option='mean'):
         samples = self.get(k)
 
-        if not self.k_fold is None and k is None:
+        if self.k_fold is not None and k is None:
             if option=='mean': aggregate = np.mean
             elif option=='std': aggregate = np.std
             else: raise 
@@ -82,14 +82,14 @@ class LoggerIMAGIN(object):
             precision = aggregate([
                 metrics.precision_score(
                     samples['true'][k], samples['pred'][k],
-                    average='binary' if self.num_classes==2 else multi_avg
+                    average='binary' if self.num_classes==2 else 'macro'
                 )
                 for k in range(self.k_fold)
             ])
             recall = aggregate([
                 metrics.recall_score(
                     samples['true'][k], samples['pred'][k],
-                    average='binary' if self.num_classes==2 else multi_avg
+                    average='binary' if self.num_classes==2 else 'macro'
                 )
                 for k in range(self.k_fold)
             ])
@@ -109,11 +109,11 @@ class LoggerIMAGIN(object):
             accuracy = metrics.accuracy_score(samples['true'], samples['pred'])
             precision = metrics.precision_score(
                 samples['true'], samples['pred'], 
-                average='binary' if self.num_classes==2 else multi_avg
+                average='binary' if self.num_classes==2 else 'macro'
             )
             recall = metrics.recall_score(
                 samples['true'], samples['pred'], 
-                average='binary' if self.num_classes==2 else multi_avg
+                average='binary' if self.num_classes==2 else 'macro'
             )
 
             if self.num_classes==2:

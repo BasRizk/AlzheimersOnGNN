@@ -3,7 +3,7 @@ import numpy as np
 import torch.nn as nn
 from torch_geometric.nn import GINConv
 from einops import rearrange, repeat
-
+from loguru import logger
 
 class ModuleTimestamping(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers=1, dropout=0.0):
@@ -72,14 +72,11 @@ class ModuleTransformer(nn.Module):
 
 class ModelESTAGIN(nn.Module):
     def __init__(
-            self, input_dim, hidden_dim, num_classes, num_heads,
-            num_layers, sparsity, dropout=0.5, cls_token='sum', 
-            readout='sero', garo_upscale=1.0,
-            debug=False
+            self, name, input_dim, hidden_dim, num_classes, num_heads,
+            num_layers, sparsity, dropout=0.5, cls_token='sum'
         ):
         super().__init__()
-        self.debug=debug
-
+        self.name = name
         assert cls_token in ['sum', 'mean', 'param']
         if cls_token=='sum': self.cls_token = lambda x: x.sum(0)
         elif cls_token=='mean': self.cls_token = lambda x: x.mean(0)
@@ -161,6 +158,7 @@ class ModelESTAGIN(nn.Module):
             matrix_inner = torch.bmm(ortho_latent, ortho_latent.permute(0,2,1))
             reg_ortho += (matrix_inner/matrix_inner.max(-1)[0].unsqueeze(-1) - torch.eye(num_nodes, device=matrix_inner.device)).triu().norm(dim=(1,2)).mean()
 
+            # NOTE: that in STAGIN latent = self.cls_token(h_attend)
             latent = self.dropout(self.cls_token(h_attend))
 
             attention['node-attention'].append(node_attn)
@@ -171,27 +169,92 @@ class ModelESTAGIN(nn.Module):
         attention['time-attention'] = torch.stack(attention['time-attention'], dim=1).detach().cpu()
 
         latent = torch.stack(latent_list, dim=1)
-
-        # if self.debug:
+        
+        
+        # debug = False
+        # if torch.isnan(latent).any():
+        #     logger.error('latent is nan')
+        #     debug = True
+        
+        # if torch.isnan(attention['node-attention']).any():
+        #     logger.error('attention is nan')
+        #     debug = True
+        
+        # if torch.isnan(attention['time-attention']).any():
+        #     logger.error('attention is nan')
+        #     debug = True
+        
+        # if torch.isnan(reg_ortho).any():
+        #     logger.error('reg_ortho is nan')
+        #     debug = True
+            
+        # if torch.isnan(h).any():
+        #     logger.error('h is nan')
+        #     debug = True
+            
+        # if torch.isnan(a).any():
+        #     logger.error('a is nan')
+        #     debug = True
+            
+        # if torch.isnan(t).any():
+        #     logger.error('t is nan')
+        #     debug = True
+        
+        # if torch.isnan(time_encoding).any():
+        #     logger.error('time_encoding is nan')
+        #     debug = True
+        
+        # if torch.isnan(h_bridge).any():
+        #     logger.error('h_bridge is nan')
+        #     debug = True
+            
+        # if torch.isnan(h_readout).any():
+        #     logger.error('h_readout is nan')
+        #     debug = True
+            
+        # if torch.isnan(h_attend).any():
+        #     logger.error('h_attend is nan')
+        #     debug = True
+        
+        # if torch.isnan(ortho_latent).any():
+        #     logger.error('ortho_latent is nan')
+        #     debug = True
+            
+        # if torch.isnan(matrix_inner).any():
+        #     logger.error('matrix_inner is nan')
+        #     debug = True
+            
+        # if debug:
+        #     logger.warning(f'debugging {self.name}')
         #     breakpoint()
+        
+
         return latent, attention, reg_ortho
 
 
 class ModelIMAGIN(nn.Module):
-    def __init__(self, input_dims, hidden_dims, num_classes, num_layers, sparsities, dropout=0.5, cls_token='sum', readout='sero'):
+    def __init__(self, input_dims, hidden_dims, num_classes, num_layers, sparsities, dropout=0.5, cls_token='sum'):
         super(ModelIMAGIN, self).__init__()
         self.aal = ModelESTAGIN(
+            name='aal',
             input_dim=input_dims[0], hidden_dim=hidden_dims[0],
             num_classes=num_classes, num_heads=1, num_layers=num_layers[0],
-            sparsity=sparsities[0], dropout=dropout, cls_token=cls_token, readout=readout,
-            # debug=True
+            sparsity=sparsities[0], dropout=dropout, cls_token=cls_token, 
         )
-        self.cc200 = ModelESTAGIN(input_dim=input_dims[1], hidden_dim=hidden_dims[1], num_classes=num_classes, num_heads=1, num_layers=num_layers[1], sparsity=sparsities[1], dropout=dropout, cls_token=cls_token, readout=readout)
-        self.schaefer = ModelESTAGIN(input_dim=input_dims[2], hidden_dim=hidden_dims[2], num_classes=num_classes, num_heads=1, num_layers=num_layers[2], sparsity=sparsities[2], dropout=dropout, cls_token=cls_token, readout=readout)
+        self.cc200 = ModelESTAGIN(
+            name='cc200', input_dim=input_dims[1], hidden_dim=hidden_dims[1],
+            num_classes=num_classes, num_heads=1, num_layers=num_layers[1],
+            sparsity=sparsities[1], dropout=dropout, cls_token=cls_token,
+        )
+        self.schaefer = ModelESTAGIN(
+            name='schaefer', input_dim=input_dims[2], hidden_dim=hidden_dims[2],
+            num_classes=num_classes, num_heads=1, num_layers=num_layers[2],
+            sparsity=sparsities[2], dropout=dropout, cls_token=cls_token
+        )
         self.linear = nn.Linear(hidden_dims[0]+hidden_dims[1]+hidden_dims[2], num_classes)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, v, a, t, sampling_endpoints, debug=False):
+    def forward(self, v, a, t, sampling_endpoints):
         # TODO discuss how come t used to be only one t instead of 3 (per atlas)
         latent_aal, attention_aal, reg_ortho_aal =\
             self.aal(v[0], a[0], t[0], sampling_endpoints[0])
@@ -205,13 +268,14 @@ class ModelIMAGIN(nn.Module):
         
         reg_ortho = reg_ortho_aal + reg_ortho_cc200 + reg_ortho_schaefer
 
-        if debug:
-            breakpoint()
-            print(logit)    
-        
-        logit = torch.sum(logit, dim=1) # TODO consult about this step
+       # TODO consult about this step
+        logit = logit.sum(1)
 
-        return logit, {'aal': attention_aal, 'cc200': attention_cc200, 'schaefer': attention_schaefer}, {'aal': latent_aal, 'cc200': latent_cc200, 'schaefer': latent_schaefer}, reg_ortho
+        return logit, {
+            'aal': attention_aal, 'cc200': attention_cc200, 'schaefer': attention_schaefer
+        }, {
+            'aal': latent_aal, 'cc200': latent_cc200, 'schaefer': latent_schaefer
+        }, reg_ortho
 
 
 ## Percentile class based on

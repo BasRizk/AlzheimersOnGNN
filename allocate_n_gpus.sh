@@ -4,6 +4,7 @@ gpu_name=v100
 [ ! -z "$2" ] && gpu_name=$2 
 echo "Allocating $n_gpus $gpu_name"
 
-ACCOUNT=ajiteshs_1045
+#ACCOUNT=ajiteshs_1045
+ACCOUNT=jonmay_231
 
-salloc --time=2:00:00 --cpus-per-task=12 --mem=16GB --account=$ACCOUNT --gres=gpu:$gpu_name:$n_gpus --partition=gpu
+salloc --time=2:00:00 --cpus-per-task=2 --mem=16GB --account=$ACCOUNT --gres=gpu:$gpu_name:$n_gpus --partition=gpu

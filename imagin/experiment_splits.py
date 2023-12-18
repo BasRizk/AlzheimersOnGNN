@@ -13,6 +13,21 @@ from experiment import step, process_input_data, summarize_results, log_fold, in
 from loguru import logger
 
 
+class EarlyStopping:
+    def __init__(self, tolerance=5, min_delta=0):
+
+        self.tolerance = tolerance
+        self.min_delta = min_delta
+        self.counter = 0
+        self.early_stop = False
+
+    def __call__(self, train_loss, validation_loss):
+        if (validation_loss - train_loss) > self.min_delta:
+            self.counter +=1
+            if self.counter >= self.tolerance:  
+                self.early_stop = True
+                
+
 def build_model(
     argv, 
     nums_nodes=None,
@@ -25,13 +40,13 @@ def build_model(
     assert steps_per_epoch is not None
     
     if train:
-        os.makedirs(os.path.join(argv.targetdir, 'model', str(argv.k_fold)), exist_ok=True)
+        os.makedirs(os.path.join(argv.target_dir, 'model', str(argv.k_fold)), exist_ok=True)
 
     # resume checkpoint if file exists
-    if not train or os.path.isfile(os.path.join(argv.targetdir, 'checkpoint.pth')):
+    if not train or os.path.isfile(os.path.join(argv.target_dir, 'checkpoint.pth')):
         logger.warning('resuming checkpoint experiment')
         checkpoint = torch.load(
-            os.path.join(argv.targetdir, 'checkpoint.pth'),
+            os.path.join(argv.target_dir, 'checkpoint.pth'),
             map_location=device
         )
     else:
@@ -51,17 +66,24 @@ def build_model(
         num_classes=argv.num_classes,
         num_layers=argv.num_layers,
         sparsities=argv.sparsities,
+        dropout=argv.dropout,
     )
+    
+    logger.info(f'Init model.')
+    
     if checkpoint['model'] is not None: 
+        logger.debug(f'Loading ckpt of model: {model}')
         model.load_state_dict(checkpoint['model'])
-        logger.debug(f'Loaded ckpt of model: {model}')
+        logger.success(f'Loaded ckpt of model: {model}')
     elif not train:
         raise ValueError('No model checkpoint found')
     
     if not train:
         model.eval()
+        
+    logger.debug(f'Loading model to {device}')
     model.to(device)
-    
+    logger.success(f'Loaded model to {device}')
 
     if argv.num_classes > 1:
         criterion = torch.nn.CrossEntropyLoss(label_smoothing=argv.label_smoothing) 
@@ -72,7 +94,7 @@ def build_model(
 
     if train:
         # define optimizer and learning rate scheduler
-        optimizer = torch.optim.Adam(model.parameters(), lr=argv.lr)    
+        optimizer = torch.optim.Adam(model.parameters(), lr=argv.lr, amsgrad=True)    
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer, max_lr=argv.max_lr, epochs=argv.num_epochs, 
             steps_per_epoch=steps_per_epoch,
@@ -98,8 +120,8 @@ def build_model(
 
 def train(argv):
     # make directories
-    os.makedirs(os.path.join(argv.targetdir, 'model'), exist_ok=True)
-    os.makedirs(os.path.join(argv.targetdir, 'summary'), exist_ok=True)
+    os.makedirs(os.path.join(argv.target_dir, 'model'), exist_ok=True)
+    os.makedirs(os.path.join(argv.target_dir, 'summary'), exist_ok=True)
 
     # set seed and device
     torch.manual_seed(argv.seed)
@@ -113,48 +135,46 @@ def train(argv):
 
     # define dataset
     dataset_train = ADNI(
-        argv.data_dir,
-        argv.data_type,
-        argv.atlas_dir,
-        argv.splits_dir,
-        mode="Train",
-        # dynamic_length=argv.dynamic_length, 
-        k_fold=argv.k_fold,
-        # smoothing_fwhm=argv.fwhm,
-        num_classes=argv.num_classes,
-        depth_of_slice=argv.depth_of_slice,
-        slicing_stride=argv.slicing_stride,
-        parallize_brains=argv.parallize_brains
+        argv.caps_dir,
+        argv.caps_type,
+        argv.atlases_dir,
+        argv.train_split_filepath,
+        argv.num_classes,
+        argv.depth_of_slice,
+        argv.slicing_stride,
+        preserve_img_shape_in_slices=argv.preserve_img_shape_in_slices,
     )
-
+    logger.success(f'Loaded training dataset')
     dataset_val = ADNI(
-        argv.data_dir,
-        argv.data_type,
-        argv.atlas_dir,
-        argv.splits_dir,
-        mode="Val",
-        # dynamic_length=argv.dynamic_length, 
-        k_fold=argv.k_fold,
-        # smoothing_fwhm=argv.fwhm,
-        num_classes=argv.num_classes,
-        depth_of_slice=argv.depth_of_slice,
-        slicing_stride=argv.slicing_stride,
-        parallize_brains=argv.parallize_brains
+        argv.caps_dir,
+        argv.caps_type,
+        argv.atlases_dir,
+        argv.val_split_filepath,
+        argv.num_classes,
+        argv.depth_of_slice,
+        argv.slicing_stride,
+        preserve_img_shape_in_slices=argv.preserve_img_shape_in_slices,
     )
-
-    n_workers=0  #4
+    logger.success(f'Loaded validation dataset')
+    
+    n_workers = min(4, int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count())))
+    logger.debug(f'Using {n_workers} workers')
     
     dataloader_train = torch.utils.data.DataLoader(
-        dataset_train, batch_size=argv.minibatch_size, shuffle=False,
+        dataset_train, batch_size=argv.minibatch_size, 
+        shuffle=True,
         num_workers=n_workers,
-        # pin_memory=True
+        pin_memory=True
     )
-    
+    logger.info(f'Loaded dataloader with {len(dataloader_train)} batches per epoch')
+
     dataloader_val = torch.utils.data.DataLoader(
-        dataset_val, batch_size=argv.minibatch_size, shuffle=False, 
+        dataset_val, batch_size=argv.minibatch_size, 
+        shuffle=True, 
         num_workers=n_workers,
-        # pin_memory=True
-    )
+        pin_memory=True
+    )    
+    logger.info(f'Loaded dataloader with {len(dataloader_val)} batches per epoch')
 
 
     # Start Experiment
@@ -165,12 +185,17 @@ def train(argv):
         steps_per_epoch=len(dataloader_train),
         train=True
     )
-    
+    logger.success(f'Finished building model.')
+
     # define logging objects
-    summary_writer = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(argv.k_fold), 'train'))
-    summary_writer_val = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(argv.k_fold), 'val'))
+    summary_writer = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(argv.k_fold), 'train'))
+    summary_writer_val = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(argv.k_fold), 'val'))
     logger_train = util.logger.LoggerIMAGIN(argv.k_fold, dataset_train.num_classes)
     logger_val = util.logger.LoggerIMAGIN(argv.k_fold, dataset_val.num_classes)
+
+    logger.info(f'Starting training for {argv.num_epochs} epochs')
+
+    early_stopping = EarlyStopping(tolerance=5, min_delta=10)
 
 
     best_accuracy = 0
@@ -211,10 +236,6 @@ def train(argv):
             pred = logit.argmax(1)
             prob = logit.softmax(1)
             
-            if np.isnan(prob.detach().cpu().numpy()).any():
-                logger.error('prob includes nan!!')
-                breakpoint()
-                
             loss_accumulate +=\
                 loss.detach().cpu().numpy()
             reg_ortho_accumulate +=\
@@ -236,7 +257,7 @@ def train(argv):
             loss_accumulate, dataloader_train, reg_ortho_accumulate,
             epoch, attentions
         )
-        logger.info(f'TRAIN: {metrics}, loss = {loss_accumulate}')
+        logger.info(f'TRAIN metrics:\n{metrics}, loss = {loss_accumulate}')
 
         # save checkpoint
         torch.save({
@@ -244,10 +265,10 @@ def train(argv):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict()},
-            os.path.join(argv.targetdir, 'checkpoint.pth'))
+            os.path.join(argv.target_dir, 'checkpoint.pth'))
 
         # check VALIDATION results
-        metrics = inference( # VAL
+        metrics, val_loss = inference( # VAL
             dataset=dataset_val,    
             dataloader=dataloader_val,
             k=0,
@@ -261,25 +282,31 @@ def train(argv):
             test_logging=False,
             set_fold=False
         )
-
+        
         if metrics['accuracy'] > best_accuracy or (metrics['accuracy'] == best_accuracy and metrics['roc_auc'] > best_auroc):
             best_accuracy = metrics['accuracy']
             best_auroc = metrics['roc_auc']
             best_model = model.state_dict()
-            torch.save(best_model, os.path.join(argv.targetdir, 'model', str(argv.k_fold), 'model.pth'))
+            torch.save(best_model, os.path.join(argv.target_dir, 'model', str(argv.k_fold), 'model.pth'))
             logger.success(f"BEST MODEL @ epoch {epoch}")
+            
+        # early stopping
+        early_stopping(loss_accumulate, val_loss)
+        if early_stopping.early_stop:
+            logger.warning(f'Early stopping at epoch {epoch}')
+            break
 
 
     checkpoint.update({'epoch': 0, 'model': None, 'optimizer': None, 'scheduler': None})
 
     # final validation results
     for atlas_name in dataset_val.atlases_names:
-        os.makedirs(os.path.join(argv.targetdir, 'attention', atlas_name, str(argv.k_fold)), exist_ok=True)
+        os.makedirs(os.path.join(argv.target_dir, 'attention', atlas_name, str(argv.k_fold)), exist_ok=True)
 
     summary_writer.close()
     summary_writer_val.close()
     # summary_writer_test.close()
-    # os.remove(os.path.join(argv.targetdir, 'checkpoint.pth'))
+    # os.remove(os.path.join(argv.target_dir, 'checkpoint.pth'))
 
 
 def test(argv):
@@ -287,18 +314,14 @@ def test(argv):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     dataset_test = ADNI(
-        argv.data_dir,
-        argv.data_type,
-        argv.atlas_dir,
-        argv.splits_dir,
-        mode="Test",
-        # dynamic_length=argv.dynamic_length, 
-        k_fold=0,
-        # smoothing_fwhm=argv.fwhm,
-        num_classes=argv.num_classes,
-        depth_of_slice=argv.depth_of_slice,
-        slicing_stride=argv.slicing_stride,
-        parallize_brains=argv.parallize_brains
+        argv.caps_dir,
+        argv.caps_type,
+        argv.atlases_dir,
+        argv.test_split_filepath,
+        argv.num_classes,
+        argv.depth_of_slice,
+        argv.slicing_stride,
+        preserve_img_shape_in_slices=argv.preserve_img_shape_in_slices,
     )
 
     dataloader_test = torch.utils.data.DataLoader(
@@ -315,7 +338,7 @@ def test(argv):
     
        
     logger_test = util.logger.LoggerIMAGIN(argv.k_fold, dataset_test.num_classes)
-    summary_writer_test = SummaryWriter(os.path.join(argv.targetdir, 'summary', str(argv.k_fold), 'test'))
+    summary_writer_test = SummaryWriter(os.path.join(argv.target_dir, 'summary', str(argv.k_fold), 'test'))
     inference( # TEST
         dataset=dataset_test,
         dataloader=dataloader_test,
@@ -332,8 +355,8 @@ def test(argv):
     )
 
     # finalize experiment
-    logger_test.to_csv(argv.targetdir)
+    logger_test.to_csv(argv.target_dir)
     final_metrics = logger_test.evaluate()
     logger.success(f'final metric: {final_metrics}')
 
-    torch.save(logger_test.get(), os.path.join(argv.targetdir, 'samples.pkl'))
+    torch.save(logger_test.get(), os.path.join(argv.target_dir, 'samples.pkl'))
